@@ -75,7 +75,7 @@
 | バックエンド | Go |
 | DB | PostgreSQL（Docker Compose管理、開発・本番統一） |
 | リアルタイム通信 | SSE（Server-Sent Events） |
-| STT | Whisper.cpp（ローカル）＋ VOICEVOXラッパー層で抽象化 |
+| STT | Whisper.cpp（ローカル動作・CPU対応） |
 | VOICEVOX | APIラッパー層で抽象化（差し替え可能設計） |
 | 表情切り替え | 感情分析連動（照れ・困惑・ドヤ顔など細かい感情） |
 | 認証 | ゲストモード＋段階認証（データ保存希望者のみアカウント作成） |
