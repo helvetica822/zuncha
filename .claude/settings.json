@@ -1,18 +1,19 @@
 {
-  "sandbox": {
-    "enabled": true,
-    "allowUnsandboxedCommands": false
-  },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
-  "teammateMode": "tmux",
-  "model": "sonnet",
-  "language": "Japanese",
   "permissions": {
-    "allow": ["Bash(*)", "Read(**)", "Write(**/.claude/*)"],
-    "deny": ["Bash(rm -rf *)", "Read(**/.env)"]
+    "allow": [
+      "Bash(*)",
+      "Read(**)",
+      "Write(**/.claude/*)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Read(**/.env)"
+    ]
   },
+  "model": "sonnet",
   "hooks": {
     "Stop": [
       {
@@ -25,5 +26,14 @@
         ]
       }
     ]
+  },
+  "language": "Japanese",
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false
+  },
+  "teammateMode": "tmux",
+  "enabledPlugins": {
+    "skill-creator@claude-plugins-official": true
   }
 }
