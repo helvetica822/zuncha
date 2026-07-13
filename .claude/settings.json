@@ -14,24 +14,8 @@
     ]
   },
   "model": "sonnet",
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/stop_create_issue.sh"
-          }
-        ]
-      }
-    ]
-  },
+  "hooks": {},
   "language": "Japanese",
-  "sandbox": {
-    "enabled": true,
-    "allowUnsandboxedCommands": false
-  },
   "teammateMode": "tmux",
   "enabledPlugins": {
     "skill-creator@claude-plugins-official": true
