@@ -85,7 +85,7 @@ Goの`internal/`パッケージ構成に相当する配置として、`ts-svelte
 ```typescript
 export type InputMode = 'voice' | 'text';
 
-export const INPUT_MODE_STORAGE_KEY = 'zuncha_input_mode';
+export const INPUT_MODE_STORAGE_KEY = 'zuncha:inputMode';
 
 // value is InputMode の型ガード。"voice"/"text"以外（大文字小文字違いを含む）はすべてfalse（7章T確定）。
 export function isInputMode(value: unknown): value is InputMode;
@@ -215,8 +215,8 @@ interface MessageBubbleProps {
 | TC-4-1-11 | `getItem`が`null`を返す | `"voice"` | `describe('getStoredInputMode')` 内 `it('TC-4-1-11: キー未存在時はvoiceを返す')` |
 | TC-4-1-12 | `getItem`が`"text"`を返す | `"text"` | `it('TC-4-1-12: 保存値がtextならtextを返す')` |
 | TC-4-1-13 | `getItem`が`"voice"`を返す | `"voice"` | `it('TC-4-1-13: 保存値がvoiceならvoiceを返す')` |
-| TC-4-1-14 | モック注入 | `setItem("zuncha_input_mode", "text")`で呼ばれる | `describe('setStoredInputMode')` 内 `it('TC-4-1-14: textを渡すとsetItemがキーと値で呼ばれる')` |
-| TC-4-1-15 | モック注入 | `setItem("zuncha_input_mode", "voice")`で呼ばれる | `it('TC-4-1-15: voiceを渡すとsetItemがキーと値で呼ばれる')` |
+| TC-4-1-14 | モック注入 | `setItem("zuncha:inputMode", "text")`で呼ばれる | `describe('setStoredInputMode')` 内 `it('TC-4-1-14: textを渡すとsetItemがキーと値で呼ばれる')` |
+| TC-4-1-15 | モック注入 | `setItem("zuncha:inputMode", "voice")`で呼ばれる | `it('TC-4-1-15: voiceを渡すとsetItemがキーと値で呼ばれる')` |
 | TC-4-1-16 | `getItem`が`"foo"`を返す | `"voice"`にフォールバック | `it('TC-4-1-16: 無効値はvoiceにフォールバックする')` |
 | TC-4-1-17 | `getItem`が空文字列を返す | `"voice"`にフォールバック | `it('TC-4-1-17: 空文字列はvoiceにフォールバックする')` |
 | TC-4-1-18 | `getItem`が例外をthrow | `"voice"`を返す（クラッシュしない） | `it('TC-4-1-18: getItemが例外を投げてもvoiceを返す')` |
@@ -296,7 +296,7 @@ interface MessageBubbleProps {
 | ID | Given | Then | 対応テスト（`describe('MessageBubble')` 内） |
 |----|-------|------|------------------------------------------------|
 | TC-4-3-14 | `emotion="喜び"`, `text="こんにちは"` | 会話ログにずんだもん発話として表示 | `it('TC-4-3-14: 通常応答がずんだもん発話として表示される')` |
-| TC-4-3-15 | `emotion="困惑"`, `text="もう一度お願いします"` | TC-4-3-14と同一のコンポーネントパスで表示（ネガティブテスト） | `it('TC-4-3-15: 困惑・リトライ文言も通常応答と同一コンポーネントパスで表示される')` |
+| TC-4-3-15 | `emotion="困惑"`, `text="もう一度お願いします"` | TC-4-3-14と同一のコンポーネントパスで表示（ネガティブテスト）（`data-emotion`属性を除き同一。感情は同属性に反映） | `it('TC-4-3-15: 困惑・リトライ文言も通常応答と同一コンポーネントパスで表示される')` |
 
 ---
 

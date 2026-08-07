@@ -17,5 +17,5 @@
       "$components/*": ["src/components/*"]
     }
   },
-  "include": ["src", "tests/unit/frontend"]
+  "include": ["src", "tests/unit/frontend", "vitest-setup.ts"]
 }

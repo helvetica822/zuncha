@@ -32,6 +32,22 @@ func (m *mockConversationRepository) InsertConversation(ctx context.Context, con
 	return args.Error(0)
 }
 
+// SetFirstText は CreateConversationService からは呼ばれない（W-07の呼び出し側で使う）。
+// そらの指摘: m.Called() を通さないスタブは AssertNotCalled や呼び出し順序の検証で
+// 静かに偽陽性になる（testify は呼び出しを記録できないため「呼ばれていない」と判定する）。
+// W-07 の「最初のユーザー発話のみ記録する = 2回目は呼ばない」がまさにその当たり所なので、
+// 呼ばれない現時点でも m.Called() 形式にしておく。
+func (m *mockConversationRepository) SetFirstText(ctx context.Context, conversationID, text string) error {
+	args := m.Called(ctx, conversationID, text)
+	return args.Error(0)
+}
+
+// Exists は CreateConversationService からは呼ばれない（W-06のハンドラで404判定に使う）。
+func (m *mockConversationRepository) Exists(ctx context.Context, conversationID string) (bool, error) {
+	args := m.Called(ctx, conversationID)
+	return args.Bool(0), args.Error(1)
+}
+
 var _ repository.ConversationRepository = (*mockConversationRepository)(nil)
 
 func TestCreateConversation(t *testing.T) {

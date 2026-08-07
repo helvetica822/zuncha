@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,18 @@ func setupTestDB(t *testing.T) *sql.DB {
 	dsn := os.Getenv("ZUNCHA_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("ZUNCHA_TEST_DATABASE_URL未設定のためスキップ（テスト用DBが必要）")
+	}
+
+	// 共有DBを使っていると、他プロセスの TRUNCATE と衝突して「広範囲かつ実行ごとに
+	// 違うテストが落ちる」切り分け困難な失敗になる（scripts/test_env.sh 参照）。
+	// t.Log はテスト失敗時と -v 時に出力されるため、まさに衝突で落ちたときに目に入る。
+	// scripts/test_env.sh は未設定時に共有DBへフォールバックする一方、
+	// scripts/create_test_db.sh は未設定をエラーにするという非対称があるので、
+	// 設定漏れの再発口をここで塞ぐ。
+	if strings.Contains(dsn, "/zuncha_test?") {
+		t.Log("警告: 実行者ごとに分離されていない共有DB(zuncha_test)を使っています。" +
+			"他プロセスが同時にテストを実行していると TRUNCATE が衝突し、この失敗は偽物の可能性があります。" +
+			"`export ZUNCHA_TEST_DB_OWNER=<自分の名前> && ./scripts/create_test_db.sh` を実行してください。")
 	}
 
 	db, err := sql.Open("postgres", dsn)
@@ -62,6 +75,19 @@ func insertAudioFile(t *testing.T, db *sql.DB, id, conversationID, messageID, fi
 		id, conversationID, messageID, filePath, fetchedAt,
 	)
 	require.NoError(t, err)
+}
+
+// dbNow は DB 側の現在時刻を返す。
+// そらの指摘（改善）: 「created_at が NOW() で補完されたこと」をホストの time.Now() と
+// 比較すると、ホストとDBコンテナのクロック差に依存する。WSL2 のサスペンド復帰では
+// 数秒のドリフトが起こり得るため、許容幅を広げても本質的に不安定なままになる。
+// 判定基準をDB側の時計だけで揃えれば skew を完全に排除できる。
+// 2ファイル（message / audio）から使うため共通ヘルパーとして置く。
+func dbNow(t *testing.T, db *sql.DB) time.Time {
+	t.Helper()
+	var now time.Time
+	require.NoError(t, db.QueryRow(`SELECT NOW()`).Scan(&now))
+	return now
 }
 
 func countRows(t *testing.T, db *sql.DB, table, where string, args ...interface{}) int {

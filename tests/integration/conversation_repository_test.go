@@ -4,9 +4,11 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
@@ -78,6 +80,7 @@ func TestConversationRepository_GC(t *testing.T) {
 	repo := postgres.NewConversationRepository(db)
 
 	t.Run("TC-2-1-09_GCでCASCADE削除が連鎖する", func(t *testing.T) {
+		_, _ = db.Exec("TRUNCATE conversations, messages, audio_files CASCADE")
 		now := time.Now()
 		convID := ulidLike(2)
 		msgID := ulidLike(3)
@@ -96,6 +99,7 @@ func TestConversationRepository_GC(t *testing.T) {
 	})
 
 	t.Run("TC-2-1-11_ちょうどNOWのレコードはGC対象外", func(t *testing.T) {
+		_, _ = db.Exec("TRUNCATE conversations, messages, audio_files CASCADE")
 		// そらの指摘（⚠要修正）: Postgres側のNOW()に依存する設計だと、
 		// INSERTからGC呼び出しまでの経過時間分だけexpires_atが必ず過去になり、
 		// 「ちょうど一致」の境界値テストが原理的に成立しなかった。
@@ -113,6 +117,7 @@ func TestConversationRepository_GC(t *testing.T) {
 	})
 
 	t.Run("TC-2-1-12_期限切れ1件が削除される", func(t *testing.T) {
+		_, _ = db.Exec("TRUNCATE conversations, messages, audio_files CASCADE")
 		now := time.Now()
 		convID := ulidLike(6)
 		insertConversation(t, db, convID, startedAtForExpiry(now.Add(-time.Hour)))
@@ -124,6 +129,7 @@ func TestConversationRepository_GC(t *testing.T) {
 	})
 
 	t.Run("TC-2-1-13_期限切れ1000件が全件削除される", func(t *testing.T) {
+		_, _ = db.Exec("TRUNCATE conversations, messages, audio_files CASCADE")
 		now := time.Now()
 		const n = 1000
 		for i := 0; i < n; i++ {
@@ -167,4 +173,156 @@ func TestConversationRepository_10並列実行(t *testing.T) {
 		assert.False(t, seen[ids[i]], "ULIDが重複してはならない: %s", ids[i])
 		seen[ids[i]] = true
 	}
+}
+
+func TestConversationRepository_SetFirstText(t *testing.T) {
+	db := setupTestDB(t)
+	repo := postgres.NewConversationRepository(db)
+
+	t.Run("W-01b-01_first_textがNULLの会話に値が保存される", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+
+		err := repo.SetFirstText(context.Background(), convID, "こんにちはずんだもん")
+
+		require.NoError(t, err)
+		_, _, firstText := queryConversationRow(t, db, convID)
+		require.True(t, firstText.Valid)
+		assert.Equal(t, "こんにちはずんだもん", firstText.String)
+	})
+
+	t.Run("W-01b-02_2回目の呼び出しでは上書きされない", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		require.NoError(t, repo.SetFirstText(context.Background(), convID, "最初の発話"))
+
+		err := repo.SetFirstText(context.Background(), convID, "2回目の発話")
+
+		require.NoError(t, err, "2回目は「何もしない」が正しいのでエラーにしない")
+		_, _, firstText := queryConversationRow(t, db, convID)
+		assert.Equal(t, "最初の発話", firstText.String,
+			"first_textは最初のユーザー発話のみを残すため上書きされてはならない")
+	})
+
+	t.Run("W-01b-03_存在しない会話IDでもエラーにならない_0件更新は冪等", func(t *testing.T) {
+		err := repo.SetFirstText(context.Background(), ulid.Make().String(), "宛先なし")
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("W-01b-04_空文字列は保存され以降は上書きされない", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+
+		require.NoError(t, repo.SetFirstText(context.Background(), convID, ""))
+		_, _, afterFirst := queryConversationRow(t, db, convID)
+		require.True(t, afterFirst.Valid, "空文字列はNULLではなく値として保存される")
+		assert.Equal(t, "", afterFirst.String)
+
+		require.NoError(t, repo.SetFirstText(context.Background(), convID, "後から来た発話"))
+
+		_, _, afterSecond := queryConversationRow(t, db, convID)
+		assert.Equal(t, "", afterSecond.String,
+			"空文字列でもIS NULLではなくなるため、2回目は上書きされない（境界）")
+	})
+
+	t.Run("W-01b-05_ちょうど20文字は保存される", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		text := strings.Repeat("あ", 20)
+
+		err := repo.SetFirstText(context.Background(), convID, text)
+
+		require.NoError(t, err)
+		_, _, firstText := queryConversationRow(t, db, convID)
+		assert.Equal(t, 20, utf8.RuneCountInString(firstText.String))
+		assert.Equal(t, text, firstText.String)
+	})
+
+	t.Run("W-01b-06_21文字はVARCHAR20の制約でエラーになる", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+
+		err := repo.SetFirstText(context.Background(), convID, strings.Repeat("あ", 21))
+
+		assert.Error(t, err,
+			"Repositoryは黙って切り詰めない。切り詰めは呼び出し側のTruncateFirstTextの責務であり、"+
+				"漏れをDB制約で早期に発火させる")
+		// そらの指摘（要修正）: この「DB制約で発火する」は全称ではない。
+		// VARCHAR(n) は SQL 仕様上、超過分が半角スペースのみの場合はエラーにせず
+		// n 文字へ黙って切り詰める（実測: 'あ'×20 + ' ' は成功し length=20）。
+		// 全角スペース・改行・通常文字の超過はエラーになる（実測で確認）。
+		// つまり呼び出し側の TruncateFirstText 漏れのうち、
+		// 「21文字目以降が半角スペースだけ」のケースだけは DB では検出できない。
+		_, _, firstText := queryConversationRow(t, db, convID)
+		assert.False(t, firstText.Valid, "エラー時はfirst_textが未設定のまま残るべき")
+	})
+
+	t.Run("W-01b-07_絵文字混在20文字がコードポイント単位で保存される", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		text := strings.Repeat("あ", 10) + strings.Repeat("😀", 10) // 20コードポイント/40バイト超
+
+		err := repo.SetFirstText(context.Background(), convID, text)
+
+		require.NoError(t, err, "VARCHAR(20)はバイト数ではなく文字数で数えるため20コードポイントは収まる")
+		_, _, firstText := queryConversationRow(t, db, convID)
+		assert.Equal(t, text, firstText.String)
+		assert.Equal(t, 20, utf8.RuneCountInString(firstText.String))
+	})
+}
+
+func TestConversationRepository_Exists(t *testing.T) {
+	// W-06 のハンドラが「会話が存在しなければ404」を判定するために必要なメソッド。
+	// GetRecentMessages では「存在するが発話0件」と「存在しない」を区別できないため、
+	// 専用の存在確認を設ける（指示書に明記が無かったため、めたんへ報告済みの追加）。
+	db := setupTestDB(t)
+	repo := postgres.NewConversationRepository(db)
+
+	t.Run("W-06-E1_存在する会話はtrueを返す", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+
+		got, err := repo.Exists(context.Background(), convID)
+
+		require.NoError(t, err)
+		assert.True(t, got)
+	})
+
+	t.Run("W-06-E2_存在しない会話はfalseを返しエラーにしない", func(t *testing.T) {
+		got, err := repo.Exists(context.Background(), ulid.Make().String())
+
+		require.NoError(t, err, "見つからないことは異常ではない")
+		assert.False(t, got)
+	})
+
+	t.Run("W-06-E3_ULID形式でない文字列でもfalseを返しエラーにしない", func(t *testing.T) {
+		got, err := repo.Exists(context.Background(), "not-a-ulid")
+
+		require.NoError(t, err)
+		assert.False(t, got)
+	})
+
+	t.Run("W-06-E4_空文字列でもfalseを返す", func(t *testing.T) {
+		got, err := repo.Exists(context.Background(), "")
+
+		require.NoError(t, err)
+		assert.False(t, got)
+	})
+
+	t.Run("W-06-E5_GCで削除された会話はfalseになる", func(t *testing.T) {
+		now := time.Now()
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, startedAtForExpiry(now.Add(-time.Hour)))
+		exists, err := repo.Exists(context.Background(), convID)
+		require.NoError(t, err)
+		require.True(t, exists)
+
+		_, err = repo.GC(context.Background(), now)
+		require.NoError(t, err)
+
+		got, err := repo.Exists(context.Background(), convID)
+		require.NoError(t, err)
+		assert.False(t, got)
+	})
 }

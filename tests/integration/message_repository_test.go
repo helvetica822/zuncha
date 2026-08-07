@@ -4,8 +4,10 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
@@ -207,5 +209,243 @@ func TestMessageRepository_GetRecentMessages(t *testing.T) {
 			assert.False(t, got[i].CreatedAt.Before(got[i-1].CreatedAt), "常に古い→新しい順であること")
 		}
 		assert.Equal(t, ids[len(ids)-1], got[len(got)-1].ID, "最後の要素は最新メッセージであること")
+	})
+}
+
+// queryMessageRow は保存されたメッセージ行を全カラム取得する。
+// conversation_repository_test.go の queryConversationRow と同じ流儀（読み取り検証用のファイルローカルヘルパー）。
+func queryMessageRow(t *testing.T, db *sql.DB, id string) (conversationID, role, content string, emotion sql.NullString, createdAt time.Time) {
+	t.Helper()
+	err := db.QueryRow(
+		`SELECT conversation_id, role, content, emotion, created_at FROM messages WHERE id = $1`, id,
+	).Scan(&conversationID, &role, &content, &emotion, &createdAt)
+	require.NoError(t, err)
+	return
+}
+
+func TestMessageRepository_InsertMessage(t *testing.T) {
+	db := setupTestDB(t)
+	repo := postgres.NewMessageRepository(db)
+
+	t.Run("W-01-01_userメッセージが全カラム保存されemotionはNULLになる", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		createdAt := time.Now().Add(-10 * time.Minute)
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID:             msgID,
+			ConversationID: convID,
+			Role:           "user",
+			Content:        "ずんだもんこんにちは",
+			CreatedAt:      createdAt,
+		})
+
+		require.NoError(t, err)
+		gotConvID, gotRole, gotContent, gotEmotion, _ := queryMessageRow(t, db, msgID)
+		assert.Equal(t, convID, gotConvID)
+		assert.Equal(t, "user", gotRole)
+		assert.Equal(t, "ずんだもんこんにちは", gotContent)
+		assert.False(t, gotEmotion.Valid, "userメッセージのemotionはNULLであるべき")
+	})
+
+	t.Run("W-01-02_assistantメッセージのemotionが保存される", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		emotion := "喜び"
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID:             msgID,
+			ConversationID: convID,
+			Role:           "assistant",
+			Content:        "やったのだ！",
+			Emotion:        &emotion,
+			CreatedAt:      time.Now(),
+		})
+
+		require.NoError(t, err)
+		_, gotRole, gotContent, gotEmotion, _ := queryMessageRow(t, db, msgID)
+		assert.Equal(t, "assistant", gotRole)
+		assert.Equal(t, "やったのだ！", gotContent)
+		require.True(t, gotEmotion.Valid)
+		assert.Equal(t, "喜び", gotEmotion.String)
+	})
+
+	t.Run("W-01-03_CreatedAt明示指定はNOWに上書きされない", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		want := time.Date(2026, 3, 1, 12, 34, 56, 0, time.UTC)
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID: msgID, ConversationID: convID, Role: "user", Content: "過去の発話", CreatedAt: want,
+		})
+
+		require.NoError(t, err)
+		_, _, _, _, gotCreatedAt := queryMessageRow(t, db, msgID)
+		assert.True(t, want.Equal(gotCreatedAt),
+			"明示したCreatedAt(%v)がそのまま保存されるべきだが %v だった", want, gotCreatedAt)
+	})
+
+	t.Run("W-01-04_CreatedAtゼロ値はDB側のNOWで補完される", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		// 判定基準はDB側の時計のみで揃える（ホストとDBコンテナのクロック差を排除）。
+		before := dbNow(t, db)
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID: msgID, ConversationID: convID, Role: "user", Content: "現在の発話",
+		})
+		after := dbNow(t, db)
+
+		require.NoError(t, err)
+		_, _, _, _, gotCreatedAt := queryMessageRow(t, db, msgID)
+		assert.False(t, gotCreatedAt.IsZero(), "ゼロ値をそのまま保存してはならない")
+		assert.WithinRange(t, gotCreatedAt, before, after,
+			"created_atはNOW()で補完され、INSERT前後にDBから取得した時刻の間に入るべき")
+	})
+
+	t.Run("W-01-05_content1000文字が切り捨てられず全長保存される", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		long := strings.Repeat("あ", 1000)
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID: msgID, ConversationID: convID, Role: "user", Content: long, CreatedAt: time.Now(),
+		})
+
+		require.NoError(t, err)
+		_, _, gotContent, _, _ := queryMessageRow(t, db, msgID)
+		assert.Equal(t, 1000, utf8.RuneCountInString(gotContent))
+		assert.Equal(t, long, gotContent)
+	})
+
+	t.Run("W-01-06_content空文字列も保存される_バリデーションは上位層の責務", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID: msgID, ConversationID: convID, Role: "user", Content: "", CreatedAt: time.Now(),
+		})
+
+		require.NoError(t, err, "NOT NULL制約は空文字を許すためRepositoryは拒否しない")
+		_, _, gotContent, _, _ := queryMessageRow(t, db, msgID)
+		assert.Equal(t, "", gotContent)
+	})
+
+	t.Run("W-01-07_挿入したメッセージがGetRecentMessagesで古い新しい順に読み戻せる", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		base := time.Now().Add(-time.Hour)
+		ids := make([]string, 3)
+		for i := 0; i < 3; i++ {
+			ids[i] = ulid.Make().String()
+			require.NoError(t, repo.InsertMessage(context.Background(), &model.Message{
+				ID:             ids[i],
+				ConversationID: convID,
+				Role:           alternatingRole(i),
+				Content:        "本文" + ids[i],
+				CreatedAt:      base.Add(time.Duration(i) * time.Second),
+			}))
+		}
+
+		got, err := repo.GetRecentMessages(context.Background(), convID)
+
+		require.NoError(t, err)
+		require.Len(t, got, 3)
+		assert.Equal(t, ids, messageIDsFromResult(got), "InsertMessageで書いた順（古い→新しい）で返るべき")
+		assert.Equal(t, "本文"+ids[0], got[0].Content)
+	})
+
+	t.Run("W-01-08_21件挿入するとGetRecentMessagesは最古1件を落として20件返す", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		base := time.Now().Add(-time.Hour)
+		ids := make([]string, 21)
+		for i := 0; i < 21; i++ {
+			ids[i] = ulid.Make().String()
+			require.NoError(t, repo.InsertMessage(context.Background(), &model.Message{
+				ID:             ids[i],
+				ConversationID: convID,
+				Role:           alternatingRole(i),
+				Content:        "本文" + ids[i],
+				CreatedAt:      base.Add(time.Duration(i) * time.Second),
+			}))
+		}
+
+		got, err := repo.GetRecentMessages(context.Background(), convID)
+
+		require.NoError(t, err)
+		require.Len(t, got, 20)
+		assert.Equal(t, ids[1:], messageIDsFromResult(got), "最古の1件（ids[0]）のみが落ちるべき")
+	})
+
+	t.Run("W-01-09_存在しないconversation_idは外部キー違反でエラー", func(t *testing.T) {
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID:             ulid.Make().String(),
+			ConversationID: ulid.Make().String(),
+			Role:           "user",
+			Content:        "孤児メッセージ",
+			CreatedAt:      time.Now(),
+		})
+
+		assert.Error(t, err)
+	})
+
+	t.Run("W-01-10_role許容外はCHECK制約違反でエラー", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID: ulid.Make().String(), ConversationID: convID, Role: "bot", Content: "不正role", CreatedAt: time.Now(),
+		})
+
+		assert.Error(t, err)
+	})
+
+	t.Run("W-01-11_emotion7種外はCHECK制約違反でエラー", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		emotion := "ハッピー"
+
+		err := repo.InsertMessage(context.Background(), &model.Message{
+			ID: ulid.Make().String(), ConversationID: convID, Role: "assistant",
+			Content: "不正emotion", Emotion: &emotion, CreatedAt: time.Now(),
+		})
+
+		assert.Error(t, err)
+	})
+
+	t.Run("W-01-12_同一IDの二重挿入は主キー重複でエラー", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		msg := &model.Message{
+			ID: msgID, ConversationID: convID, Role: "user", Content: "1回目", CreatedAt: time.Now(),
+		}
+		require.NoError(t, repo.InsertMessage(context.Background(), msg))
+
+		err := repo.InsertMessage(context.Background(), msg)
+
+		assert.Error(t, err)
+	})
+
+	t.Run("W-01-13_会話削除でCASCADEによりメッセージも消える", func(t *testing.T) {
+		convID := ulid.Make().String()
+		insertConversation(t, db, convID, time.Now())
+		msgID := ulid.Make().String()
+		require.NoError(t, repo.InsertMessage(context.Background(), &model.Message{
+			ID: msgID, ConversationID: convID, Role: "user", Content: "消える発話", CreatedAt: time.Now(),
+		}))
+		require.Equal(t, 1, countRows(t, db, "messages", "id = $1", msgID))
+
+		_, err := db.Exec(`DELETE FROM conversations WHERE id = $1`, convID)
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, countRows(t, db, "messages", "id = $1", msgID))
 	})
 }

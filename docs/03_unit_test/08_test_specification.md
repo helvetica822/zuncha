@@ -73,7 +73,7 @@
 |-----------|------|
 | `internal/model` | `Conversation` / `Message` / `AudioFile` のデータ構造 |
 | `internal/repository` | Repository層のインターフェース定義、および`ReverseMessages`純粋関数 |
-| `internal/filestore` | 音声一時ファイルの読込・削除を抽象化する`FileStore`インターフェース |
+| `internal/service (filestore.go)` | 音声一時ファイルの読込・削除を抽象化する`FileStore`インターフェース |
 | `internal/service` | オーケストレーション層（`CreateConversationService` / `FetchAudioService`） |
 | `internal/postgres` | `internal/repository`の各インターフェースに対するPostgreSQL実装（GREEN phaseで作成、I/O層テストの対象） |
 | `internal/localfs` | `FileStore`のローカルファイルシステム実装（GREEN phaseで作成、I/O層テストの対象） |
@@ -111,17 +111,19 @@ type AudioFile struct {
 
 | # | シグネチャ | 対応観点 |
 |---|-----------|---------|
-| 1 | `type ConversationRepository interface { GC(ctx context.Context, now time.Time) (int64, error); InsertConversation(ctx context.Context, conv *model.Conversation) error }` | 2-1 |
-| 2 | `type MessageRepository interface { GetRecentMessages(ctx context.Context, conversationID string) ([]model.Message, error) }` | 2-2 |
+| 1 | `type ConversationRepository interface { GC(ctx context.Context, now time.Time) (int64, error); InsertConversation(ctx context.Context, conv *model.Conversation) error; SetFirstText(ctx context.Context, conversationID, text string) error }` | 2-1 |
+| 2 | `type MessageRepository interface { GetRecentMessages(ctx context.Context, conversationID string) ([]model.Message, error); InsertMessage(ctx context.Context, msg *model.Message) error }` | 2-2 |
 | 3 | `func ReverseMessages(messages []model.Message) []model.Message` | 2-2 |
-| 4 | `type AudioRepository interface { GetByULID(ctx context.Context, ulid string) (*model.AudioFile, error); UpdateFetchedAt(ctx context.Context, ulid string, fetchedAt time.Time) error; DeleteRecord(ctx context.Context, ulid string) error }` | 2-3 |
+| 4 | `type AudioRepository interface { GetByULID(ctx context.Context, ulid string) (*model.AudioFile, error); UpdateFetchedAt(ctx context.Context, ulid string, fetchedAt time.Time) error; DeleteRecord(ctx context.Context, ulid string) error; InsertRecord(ctx context.Context, audio *model.AudioFile) error }` | 2-3 |
 | 5 | `var ErrAudioNotFound error`（`GetByULID`が対象なしの場合に返すセンチネルエラー） | 2-3 |
+
+> **2026-08-05 追記 (Wave A)**: `SetFirstText` / `InsertMessage` / `InsertRecord` を追加した (`docs/04_implementation/04_realtime_wiring_design.md` W-01/W-01b/W-02)。`SetFirstText` は `WHERE ... AND first_text IS NULL` により最初のユーザー発話のみを記録し、0件更新はエラーにしない冪等な契約。`InsertMessage`/`InsertRecord` は `CreatedAt` がゼロ値なら DB の `NOW()` に委ねる。
 
 > `UpdateFetchedAt` / `DeleteRecord` は対象0件（CASCADE削除等により既に消えている場合）でもエラーを返さない冪等な契約とする（`07_test_cases_phase2.md` TC-2-3-08 / `06_test_perspectives_phase2.md` 2-3例外系の指摘に対応）。
 >
 > **`GC`のシグネチャ変更（そらのレビュー指摘・2026-07-08）**: 当初`GC(ctx context.Context) (int64, error)`とし、内部SQLで`WHERE expires_at < NOW()`のようにPostgres側の`NOW()`に判定を委ねる設計を想定していたが、そらのレビューで「INSERTからGC呼び出しまでの経過時間分だけ`expires_at`が必ず過去になり、`expires_at`がちょうど現在時刻に一致する境界値のテストが原理的に成立しない」との指摘を受けた。フェーズ1の1-5（`IsExpired(expiresAt, now time.Time) bool`）で確立したClock注入の思想と一貫させ、`GC`にも判定基準時刻`now`を呼び出し元から明示的に注入する設計（`WHERE expires_at < $1`にGoから`now`を渡す）に変更した。呼び出し元（`CreateConversationService`）は内部で`time.Now()`を都度取得して渡す。
 
-### 3.3 FileStoreインターフェース（`internal/filestore`）
+### 3.3 FileStoreインターフェース（`internal/service (filestore.go)`）
 
 ```go
 type FileStore interface {
@@ -288,7 +290,7 @@ go test ./tests/integration/... -v
 
 ### 現状（RED phase）
 
-`internal/model` / `internal/repository` / `internal/filestore` / `internal/service` / `internal/postgres` / `internal/localfs` のいずれも未実装のため、上記コマンドは import エラーによりコンパイルが通らない。これはTDDのRED状態として意図した挙動である。
+`internal/model` / `internal/repository` / `internal/service (filestore.go)` / `internal/service` / `internal/postgres` / `internal/localfs` のいずれも未実装のため、上記コマンドは import エラーによりコンパイルが通らない。これはTDDのRED状態として意図した挙動である。
 
 I/O層テストは、GREEN phaseでパッケージが実装された後も、環境変数`ZUNCHA_TEST_DATABASE_URL`が未設定の場合は`t.Skip`によりスキップされる設計とした（テスト用DBを用意していないローカル環境やCI設定でオーケストレーション層のテストだけを高速に回せるようにするため）。
 

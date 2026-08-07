@@ -37,6 +37,14 @@ func (m *mockAudioRepository) DeleteRecord(ctx context.Context, ulid string) err
 	return args.Error(0)
 }
 
+// InsertRecord は FetchAudioService からは呼ばれない（W-09のTTS側で使う）。
+// そらの指摘: m.Called() を通さないスタブは AssertNotCalled や呼び出し順序の検証で
+// 静かに偽陽性になるため、呼ばれない現時点でも m.Called() 形式にしておく。
+func (m *mockAudioRepository) InsertRecord(ctx context.Context, audio *model.AudioFile) error {
+	args := m.Called(ctx, audio)
+	return args.Error(0)
+}
+
 var _ repository.AudioRepository = (*mockAudioRepository)(nil)
 
 type mockFileStore struct {
@@ -95,7 +103,7 @@ func TestFetchAudio(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.Equal(t, []byte("wav-data"), data)
-		assert.Equal(t, []string{"Read", "UpdateFetchedAt", "Delete", "DeleteRecord"}, callOrder)
+		assert.Equal(t, []string{"GetByULID", "Read", "UpdateFetchedAt", "Delete", "DeleteRecord"}, callOrder)
 		repo.AssertNumberOfCalls(t, "UpdateFetchedAt", 1)
 		files.AssertNumberOfCalls(t, "Delete", 1)
 		repo.AssertNumberOfCalls(t, "DeleteRecord", 1)

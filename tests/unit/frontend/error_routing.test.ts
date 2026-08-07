@@ -1,6 +1,6 @@
 // 対応仕様: docs/03_unit_test/14_test_specification.md 4.3（観点4-3、TC-4-3-01〜15）
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
+import { render, screen, cleanup } from '@testing-library/svelte';
 
 import { routeSSEEvent, DEFAULT_ERROR_MESSAGE } from '../../../src/lib/sseEventRouter';
 import type { SSEEvent, Emotion } from '../../../src/lib/sseEventRouter';
@@ -104,10 +104,10 @@ describe('Toast', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('サーバーエラーが発生しました');
   });
 
-  it('TC-4-3-09: 3秒後にDOMから消滅する', () => {
+  it('TC-4-3-09: 3秒後にDOMから消滅する', async () => {
     render(Toast, { message: 'サーバーエラーが発生しました' });
 
-    vi.advanceTimersByTime(3000);
+    await vi.advanceTimersByTimeAsync(3000);
 
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -130,19 +130,19 @@ describe('Toast', () => {
     expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
-  it('TC-4-3-12: ちょうど3000msの時点で消滅している', () => {
+  it('TC-4-3-12: ちょうど3000msの時点で消滅している', async () => {
     render(Toast, { message: 'サーバーエラーが発生しました' });
 
-    vi.advanceTimersByTime(3000);
+    await vi.advanceTimersByTimeAsync(3000);
 
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('TC-4-3-13: 連続表示時は上書きされ多重表示にならない（暫定仕様、7章BB確定）', () => {
+  it('TC-4-3-13: 連続表示時は上書きされ多重表示にならない（暫定仕様、7章BB確定）', async () => {
     const { rerender } = render(Toast, { message: '1件目のエラー' });
 
-    vi.advanceTimersByTime(100);
-    rerender({ message: '2件目のエラー' });
+    await vi.advanceTimersByTimeAsync(100);
+    await rerender({ message: '2件目のエラー' });
 
     expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(screen.getByRole('alert')).toHaveTextContent('2件目のエラー');
@@ -157,14 +157,23 @@ describe('MessageBubble', () => {
   });
 
   it('TC-4-3-15: 困惑・リトライ文言も通常応答と同一コンポーネントパスで表示される', () => {
+    // 本文と data-emotion 以外が完全一致＝同一コンポーネントパス。
+    // data-emotion は感情の反映点なので比較から除外し、別途値を検証する。
+    const stripVolatile = (html: string, text: string): string =>
+      html.replace(text, '').replace(/ data-emotion="[^"]*"/, '');
+
     const normal = render(MessageBubble, { text: 'こんにちは', emotion: '喜び' as Emotion });
-    const normalHtml = normal.container.innerHTML.replace('こんにちは', '');
+    const normalHtml = stripVolatile(normal.container.innerHTML, 'こんにちは');
     normal.unmount();
 
     const retry = render(MessageBubble, { text: 'もう一度お願いします', emotion: '困惑' as Emotion });
-    const retryHtml = retry.container.innerHTML.replace('もう一度お願いします', '');
+    const retryHtml = stripVolatile(retry.container.innerHTML, 'もう一度お願いします');
 
     expect(screen.getByText('もう一度お願いします')).toBeInTheDocument();
     expect(retryHtml).toBe(normalHtml);
+    // 除外した data-emotion 自体は感情を反映する（画面設計 9-1 の感情ラベル）。
+    expect(retry.container.querySelector('[data-role="assistant"]')?.getAttribute('data-emotion')).toBe(
+      '困惑',
+    );
   });
 });
