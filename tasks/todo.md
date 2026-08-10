@@ -632,7 +632,7 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 
 - [x] 追補①②の対応方針決定・指示書追記
 - [x] ずんだもんによる追補実装
-- [ ] WIPコミットで再固定→そらへ再レビュー依頼
+- [x] WIPコミット(034af09)で再固定→そらへ再レビュー依頼
 
 ### Wave B-2 追補対応(そら再レビュー指摘【A】【B】) 完了 (2026-08-10, ずんだもん)
 
@@ -655,3 +655,14 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 - `go test ./tests/... -count=1 -v`(DB: `zuncha_test_zundamon`) → **411 PASS / 0 FAIL / 0 SKIP**(トップレベル63件。integration 3.7s、unit 0.22s)。前回410から+1(新規テスト1件)
 - `unset ZUNCHA_TEST_DATABASE_URL` 状態での `go test ./tests/integration/... -run TestGracefulShutdown -v` → `InFlightCompletesAndNewConnRefused` **PASS** / `CtxDependentHandlerIsCanceled` **PASS(skipされない)** / `SSE接続中でも停止がエラーなく完了する` **SKIP**。指示どおり両方を確認
 - `./scripts/test_race.sh`(docker経由 `-race -count=1`) → integration 5.9s / unit 1.3s、**DATA RACE 0件**
+
+### そら再レビュー(034af09): ⚠要修正(残1件・軽微) (2026-08-10)
+
+観点1〜5(そらが事前提示した確認観点)は全てOK、ミューテーション3件もDB無し環境で実測しRED確認(`baseCancel()`削除・`BaseContext`代入削除・`fail`を`err.Error()`に戻す)。指摘A/Bは実質解消。`TestGracefulShutdown`系20回連続実行もflaky無し。
+
+- **【C】`03_single_instance_smoke.md:4`の目的行だけ旧表現「in-flight完遂」が残存**: 46行目・63行目は修正済みだったが、冒頭の目的行が未修正で「最初に読む一文で誤った前提を与える」との指摘。「この1行が直れば即承認できる状態」とのコメント付き。
+
+単純で明白な1行修正のため、つむぎが直接対応(過剰なエンジニアリング回避、CLAUDE.md方針どおり)。目的行を「in-flightの扱い(`r.Context()`非参照なら完遂・依存する処理は打ち切り)・停止後の新規接続遮断」に修正。
+
+- [x] 指摘C対応(つむぎ直接修正)
+- [ ] WIPコミットで再固定→そらへ最終確認依頼
