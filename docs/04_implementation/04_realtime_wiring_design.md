@@ -245,7 +245,7 @@ W-06 で「不正UTF-8を `utf8.ValidString` で400にする」と指示した�
 
 | ID | 内容 | 対象 | 依存 | 規模 |
 |---|---|---|---|---|
-| W-08 | **Claude API** クライアント実装 (決-1)。`llm.LLMClient` を実装し、F-AI-02 の `{text, emotion}` JSON 同時出力をシステムプロンプトで強制。`ResponseParser` アダプタ・タイムアウト・APIキーは環境変数 (`ANTHROPIC_API_KEY`)・ログにキーと発話内容を出さない (NF-SEC) (B-3) | `internal/anthropic` | — | M |
+| W-08 | **Claude API** クライアント実装 (決-1)。`llm.LLMClient` を実装し、F-AI-02 の `{text, emotion}` JSON 同時出力を**構造化出力(`output_config.format`の`json_schema`)＋システムプロンプトの二重防壁**で強制(実装時にSDKで両方使えることを実測し確定。`ParseLLMResponse`が3枚目の防壁として残る)。`ResponseParser` アダプタ・タイムアウト・APIキーは環境変数 (`ANTHROPIC_API_KEY`)・ログにキーと発話内容を出さない (NF-SEC) (B-3) | `internal/anthropic` | — | M |
 | W-09 | VOICEVOX ラッパー `TTSClient` 実装 (D-4) (B-4) | `internal/voicevox` | W-02 | M |
 | W-10 | Whisper.cpp クライアント + `POST .../stt` ハンドラ + ffmpeg 変換 (D-3) (B-5) | `internal/whispercpp`, `cmd/api` | — | L |
 | W-11 | Docker Compose 一式 (api / postgres / voicevox / whisper-server、api イメージに ffmpeg 同梱) (B-9, NF-MAINT-02) | `docker-compose.yml`, `Dockerfile` | W-09,W-10 | M |
@@ -306,7 +306,7 @@ Go SDK `github.com/anthropics/anthropic-sdk-go` を `go.mod` に追加する (�
 | リトライ | **`option.WithMaxRetries` を明示的に 1 以下へ**。既定は2 | 既定のままだと最悪 `タイムアウト×3` の実時間を消費し、W-06 の60秒予算をLLMだけで食い潰してTTSに回らない |
 | タイムアウト | `option.WithRequestTimeout(30*time.Second)` 程度 | ハンドラ側60秒のうちTTS・DB保存の余地を残す |
 | エラー処理 | `errors.As` で `*anthropic.Error` を取り出し `StatusCode` で分岐 (429/5xx は再試行可、4xx は不可) | Go SDK は全非2xxを単一のエラー型で返す |
-| 拒否応答 | **`StopReason` を `Content` の読み出し前に検査**する。拒否時は `content` が空または部分的 | Opus 5 は安全性分類器で拒否し得る (HTTP 200 + `stop_reason: "refusal"`)。`Content[0]` を無条件に読む実装は落ちる。拒否は `llm` のセンチネルエラーとして返し、既存の `ResponseStreamer.fail` 経由で `SendError` に落とす |
+| 拒否応答 | **`StopReason` を `Content` の読み出し前に検査**する。拒否時は `content` が空または部分的 | Opus 5 は安全性分類器で拒否し得る (HTTP 200 + `stop_reason: "refusal"`)。`Content[0]` を無条件に読む実装は落ちる。拒否は**`internal/anthropic`独自のセンチネルエラー`ErrRefused`**として返し(`internal/llm`のI/Fは変更しない方針のため)、既存の `ResponseStreamer.fail` 経由で `SendError` に落とす |
 
 **JSON強制の方式 (要実測)**: 公式には構造化出力 (`output_config.format` の `json_schema`) が Opus 5 で利用可能で、プロンプトでの指示より確実。ただし**Go SDK での正確なバインディング名はスキルの Go 版ドキュメントに記載がない**。推測で書かずに、SDK追加後の**コンパイルエラーを手掛かりに確定**すること (公式が静的型付け言語で推奨している手順)。
 

@@ -3,13 +3,13 @@ module zuncha
 go 1.24
 
 require (
+	github.com/anthropics/anthropic-sdk-go v1.62.0
 	github.com/lib/pq v1.10.9
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.62.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
