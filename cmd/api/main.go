@@ -16,6 +16,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/oklog/ulid/v2"
 
+	"zuncha/internal/anthropic"
 	"zuncha/internal/handler"
 	"zuncha/internal/httpserver"
 	"zuncha/internal/llm"
@@ -28,27 +29,30 @@ import (
 )
 
 const (
-	defaultPort       = "8080"
-	envPort           = "PORT"
-	envDatabaseURL    = "ZUNCHA_DATABASE_URL"
-	envAllowedOrigins = "ZUNCHA_ALLOWED_ORIGINS"
-	readHeaderTimeout = 10 * time.Second
-	shutdownTimeout   = 10 * time.Second
-	allowedOriginsSep = ","
+	defaultPort        = "8080"
+	envPort            = "PORT"
+	envDatabaseURL     = "ZUNCHA_DATABASE_URL"
+	envAllowedOrigins  = "ZUNCHA_ALLOWED_ORIGINS"
+	envAnthropicAPIKey = "ANTHROPIC_API_KEY"
+	readHeaderTimeout  = 10 * time.Second
+	shutdownTimeout    = 10 * time.Second
+	allowedOriginsSep  = ","
 )
 
 // config は環境変数から読み込むサーバ設定。
 type config struct {
-	port           string
-	databaseURL    string
-	allowedOrigins []string
+	port            string
+	databaseURL     string
+	allowedOrigins  []string
+	anthropicAPIKey string
 }
 
 func loadConfig() config {
 	c := config{
-		port:           os.Getenv(envPort),
-		databaseURL:    os.Getenv(envDatabaseURL),
-		allowedOrigins: parseAllowedOrigins(os.Getenv(envAllowedOrigins)),
+		port:            os.Getenv(envPort),
+		databaseURL:     os.Getenv(envDatabaseURL),
+		allowedOrigins:  parseAllowedOrigins(os.Getenv(envAllowedOrigins)),
+		anthropicAPIKey: os.Getenv(envAnthropicAPIKey),
 	}
 	if c.port == "" {
 		c.port = defaultPort
@@ -74,6 +78,10 @@ func main() {
 	if cfg.databaseURL == "" {
 		log.Fatal("ZUNCHA_DATABASE_URL が未設定です")
 	}
+	// 実行時に初めて落ちるより起動時に落とす（DB URL と同じ流儀）。
+	if cfg.anthropicAPIKey == "" {
+		log.Fatal("ANTHROPIC_API_KEY が未設定です")
+	}
 
 	db, err := sql.Open("postgres", cfg.databaseURL)
 	if err != nil {
@@ -90,13 +98,15 @@ func main() {
 	files := localfs.NewFileStore()
 	hub := sse.NewHub()
 
-	// TODO(W-08/W-09): LLMClient/ResponseParser/TTSClient の実プロバイダ実装が揃い次第
-	// ここへ差し替える。ResponseStreamer と ChatService の配線自体は確定済み。
-	var (
-		llmClient llm.LLMClient
-		parser    llm.ResponseParser
-		ttsClient tts.TTSClient
-	)
+	llmClient, err := anthropic.NewClient(cfg.anthropicAPIKey)
+	if err != nil {
+		log.Fatalf("Claude APIクライアントの生成に失敗: %v", err)
+	}
+	parser := llm.NewDefaultParser()
+
+	// TODO(W-09): TTSClient(VOICEVOX) の実装が揃い次第ここへ差し替える。
+	// ResponseStreamer と ChatService の配線自体は確定済み。
+	var ttsClient tts.TTSClient
 	streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, sse.NewSentenceChunker())
 	chat := service.NewChatService(
 		msgRepo, convRepo, streamer, hub,

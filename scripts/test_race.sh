@@ -9,7 +9,9 @@
 #   例) ./scripts/test_race.sh -run TestHub -v
 set -euo pipefail
 
-GO_IMAGE="${GO_IMAGE:-golang:1.22}"
+# go.mod の go ディレクティブに合わせる。anthropic-sdk-go が go >= 1.24 を要求するため
+# W-08 で 1.22 から引き上げた（1.22 のままだと GOTOOLCHAIN=local で起動すらしない）。
+GO_IMAGE="${GO_IMAGE:-golang:1.24}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --network host: integration テストがホストの 55432 の PostgreSQL に到達するため。

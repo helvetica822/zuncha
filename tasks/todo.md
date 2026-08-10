@@ -679,4 +679,22 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 
 **今回の教訓を`tasks/lessons.md`に記録**: ①挙動を変える修正は影響範囲を「変更したファイル」でなく「その挙動を語っている全箇所」でgrepしないと1往復で終わらない(指摘Cの見落としが好例) ②「skipなし」等の断定コメントは将来の変更で嘘になりうる前提を疑う ③`WithoutCancel`箇所はプロセス終了時の扱いを設計時点で合わせておく。
 
-- [ ] 次タスク判断: Wave C-1(Claude API実接続 W-08)着手 or 他の優先度確認
+- [x] 次タスク判断: Wave C-1(Claude API実接続 W-08)着手を決定。ユーザーからANTHROPIC_API_KEY未発行・実API疎通確認は後日ユーザー自身が行うとの申し送りあり。指示書§5.2がhttptestフェイクのみで完結する設計のため実装は続行可と判断
+
+### Wave C-1 (W-08) 実装完了・相談5件に回答 (2026-08-10, ずんだもん→つむぎ)
+
+ずんだもんが `internal/anthropic`(Client/prompt/schema)・`internal/llm/parser_adapter.go` を実装。§2確定事項は無変更、§6のJSON強制方式は**推測せずSDKソースを実測**して`OutputConfigParam`(`effort`)と`JSONOutputFormatParam`(`json_schema`)が両方使えることを確認し採用(`ParseLLMResponse`は二重防壁として維持)。
+
+実測: RED確認済み、`go test ./tests/...`全緑(integration 9.0s/unit 0.9s)、`test_race.sh`全緑、`gofmt`/`vet`/`build`クリーン、`internal/llm`の4ファイル無変更(`git diff --stat`空)、`ANTHROPIC_API_KEY`未設定でも全緑。ミューテーション3件(`WithMaxRetries(1)`除去/StopReason先行検査除去/textブロックフィルタ除去)すべて狙った箇所が赤。`mutation-test-overlay`スキルを早速活用。
+
+**相談5件への回答(つむぎ判断)**:
+
+1. **go.mod の go 1.22→1.24引き上げ(SDK依存で回避不能)**: 承認。実測(`GOTOOLCHAIN=local`でのビルド失敗)で必然性確認済み。`scripts/test_race.sh`の`GO_IMAGE`更新も連動して承認。
+2. **testify 1.9.0→1.11.1強制アップグレード**: つむぎが直接検証。両バージョンの`mock.go`で`AssertNotCalled`・`methodWasCalled`・`isArgsEqual`の実装を比較し**バイト単位で完全一致**(行番号のみズレ)と確認。`tasks/todo.md`§0-0の「偽陽性は`AssertNotCalled`と順序検証の2系統に限定」という調査結果はv1.11.1でも**そのまま有効**、再調査不要。
+3. **§7配線を実施した判断**: 承認(指示書の「W-07未完成なら配線しない」という但し書きは非該当、W-07完成済みのため妥当)。ただし`ANTHROPIC_API_KEY`未設定で`log.Fatal`する設計により、**ユーザーがキー発行前は`go run ./cmd/api`が起動できない**。ユーザーへ申し送り済み(テストには影響なし、`cmd/api`非依存を確認済み)。
+4. **感情7種enumの四重管理(DDL/validation/SystemPrompt/schema.go)**: 一元化は次Waveでの検討事項として申し送り(今回は最小変更で見送り、`internal/validation`に公開スライスを足すかは別途判断)。
+5. **実APIでの疎通確認は未了**: ユーザー自身が今後キー発行後に確認予定。`output_config.format`(json_schema) + adaptive thinking + `effort:low`の組み合わせが実APIで400にならないかが未検証。400の場合は`OutputConfig.Format`の1行を落とすだけで退避できる構造になっている旨、申し送り済み。
+
+- [x] Wave C-1 実装完了・相談5件回答(つむぎ最終ゲートは実API疎通確認保留のためin_progressのまま)
+- [ ] ユーザーによるANTHROPIC_API_KEY発行・実API疎通確認(申し送り、対応時期未定)
+- [ ] そらへWave C-1レビュー依頼
