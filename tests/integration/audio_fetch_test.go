@@ -239,7 +239,11 @@ func TestAudioRepository_InsertRecord(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
-	t.Run("W-02-05_存在しないmessage_idは外部キー違反でエラー", func(t *testing.T) {
+	// W-09着手前レビューで判明: message_id は FK 制約を持たない(意図的、詳細は
+	// docs/04_implementation/04_realtime_wiring_design.md D-4参照)。TTS合成が
+	// assistantメッセージ保存(SendDone)より前に完了する必要があり、その時点では
+	// message_idはまだ採番済みだがmessagesテーブルには未挿入のため。
+	t.Run("W-02-05_存在しないmessage_idでもエラーにならない(FK制約なし、TTS合成がメッセージ保存より先行するため)", func(t *testing.T) {
 		convID, _ := seedConversationAndMessage(t, db)
 
 		err := repo.InsertRecord(context.Background(), &model.AudioFile{
@@ -247,7 +251,7 @@ func TestAudioRepository_InsertRecord(t *testing.T) {
 			FilePath: "/var/tmp/a.wav", CreatedAt: time.Now(),
 		})
 
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("W-02-06_存在しないconversation_idは外部キー違反でエラー", func(t *testing.T) {
@@ -274,7 +278,9 @@ func TestAudioRepository_InsertRecord(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("W-02-08_メッセージ削除でCASCADEにより音声レコードも消える", func(t *testing.T) {
+	// message_id には FK が無いため、messages 側の削除は audio_files に連鎖しない
+	// (孤立を許容する設計。conversation_id の FK/CASCADE は引き続き有効)。
+	t.Run("W-02-08_メッセージ削除しても音声レコードは残る(message_idにFKが無いため連鎖しない)", func(t *testing.T) {
 		convID, msgID := seedConversationAndMessage(t, db)
 		audioID := ulid.Make().String()
 		require.NoError(t, repo.InsertRecord(context.Background(), &model.AudioFile{
@@ -286,6 +292,6 @@ func TestAudioRepository_InsertRecord(t *testing.T) {
 		_, err := db.Exec(`DELETE FROM messages WHERE id = $1`, msgID)
 
 		require.NoError(t, err)
-		assert.Equal(t, 0, countRows(t, db, "audio_files", "id = $1", audioID))
+		assert.Equal(t, 1, countRows(t, db, "audio_files", "id = $1", audioID))
 	})
 }

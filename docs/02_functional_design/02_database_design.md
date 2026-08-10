@@ -115,7 +115,7 @@ TTS（Text-to-Speech）で生成した音声ファイルの一時管理テーブ
 |---------|-----|------|------|
 | id | TEXT | PRIMARY KEY, NOT NULL | ULID（URL `/audio/{id}` のキー） |
 | conversation_id | TEXT | NOT NULL, FK → conversations.id ON DELETE CASCADE | 紐づく会話ID |
-| message_id | TEXT | NOT NULL, FK → messages.id ON DELETE CASCADE | 紐づくメッセージID |
+| message_id | TEXT | NOT NULL(FKなし) | 紐づくメッセージID。TTS合成がassistantメッセージ保存より先に完了する必要があるためFK制約を外している(詳細: `04_realtime_wiring_design.md` D-4) |
 | file_path | TEXT | NOT NULL | サーバー上の一時ファイルパス |
 | created_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | ファイル生成日時 |
 | fetched_at | TIMESTAMPTZ | NULL可 | フロントがGETした日時（NULL = 未取得） |
@@ -123,12 +123,12 @@ TTS（Text-to-Speech）で生成した音声ファイルの一時管理テーブ
 **DDL:**
 
 ```sql
+-- message_id は messages(id) への FK を持たない（意図的。理由は上表参照）。
 CREATE TABLE audio_files (
     id              TEXT        PRIMARY KEY NOT NULL,
     conversation_id TEXT        NOT NULL
         REFERENCES conversations(id) ON DELETE CASCADE,
-    message_id      TEXT        NOT NULL
-        REFERENCES messages(id) ON DELETE CASCADE,
+    message_id      TEXT        NOT NULL,
     file_path       TEXT        NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     fetched_at      TIMESTAMPTZ
@@ -145,7 +145,7 @@ CREATE TABLE audio_files (
 | idx_messages_conv_created | messages | (conversation_id, created_at DESC) | — | 直近20件メッセージの高速取得 |
 | idx_audio_files_fetched_at | audio_files | fetched_at | WHERE fetched_at IS NOT NULL | 取得済みファイルのGC用（部分インデックス） |
 | idx_audio_files_conversation_id | audio_files | conversation_id | — | 外部キー補助 |
-| idx_audio_files_message_id | audio_files | message_id | — | 外部キー補助 |
+| idx_audio_files_message_id | audio_files | message_id | — | メッセージ単位の検索補助(FKなし。message_idにFK制約が無い理由は2.3節参照) |
 
 **DDL:**
 

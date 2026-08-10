@@ -39,7 +39,7 @@
 | idx_messages_conv_created | messages(conversation_id, created_at DESC) | 直近20件取得 |
 | idx_audio_files_fetched_at | audio_files(fetched_at) WHERE NOT NULL | GC用（部分インデックス） |
 | idx_audio_files_conversation_id | audio_files(conversation_id) | FK補助 |
-| idx_audio_files_message_id | audio_files(message_id) | FK補助 |
+| idx_audio_files_message_id | audio_files(message_id) | メッセージ単位の検索補助(FKなし。W-09実装時にmessage_idのFK制約を撤去。詳細: `04_realtime_wiring_design.md` D-4) |
 
 ---
 

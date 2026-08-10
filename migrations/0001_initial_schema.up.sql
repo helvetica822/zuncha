@@ -19,12 +19,17 @@ CREATE TABLE messages (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- message_id は messages(id) への FK を持たない（意図的）。
+-- TTS合成(audio_filesへの登録)はassistantメッセージ保存(SendDone)より前に完了する必要があり、
+-- その時点ではmessage_idはまだ採番済みだがmessagesテーブルには未挿入のため、
+-- FK制約があると外部キー違反になる。conversation_idのFK(CASCADE)は残るため、
+-- 会話削除時には音声ファイルも連鎖削除される。詳細は
+-- docs/04_implementation/04_realtime_wiring_design.md D-4参照。
 CREATE TABLE audio_files (
     id              TEXT        PRIMARY KEY NOT NULL,
     conversation_id TEXT        NOT NULL
         REFERENCES conversations(id) ON DELETE CASCADE,
-    message_id      TEXT        NOT NULL
-        REFERENCES messages(id) ON DELETE CASCADE,
+    message_id      TEXT        NOT NULL,
     file_path       TEXT        NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     fetched_at      TIMESTAMPTZ

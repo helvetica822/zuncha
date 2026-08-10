@@ -733,3 +733,20 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 2. **400が出た場合の切り分け順**: `output_config.format`(json_schema) → `output_config.effort:"low"` → `system`のCacheControl、の順で外して試す。退避は`internal/anthropic/client.go`の`Format:`1行を消すだけで済む構造(ただしテストが赤くなるのでテスト側の対応も必要)。
 3. **401なら`errors.As`で`*anthropic.Error`の`StatusCode`が取れる**のでログで判別可能。APIキー・プロンプト本文はログに出ない設計。
 4. **プロンプトキャッシュの確認**は`usage.cache_read_input_tokens`を見る。ゼロが続くならシステムプロンプトが揺れているか、Opus 5の最小キャッシュ長(512トークン)に`SystemPrompt`が届いていない可能性(定数なので通常揺れないはずだが実測が必要)。
+
+### W-09着手前レビューで設計課題を発見・ユーザー承認で解決方針確定 (2026-08-10)
+
+W-09(VOICEVOX/TTS実装)着手前に設計書D-4を精査したところ、実装前に解決すべき制約を発見。`audio_files.message_id`は`NOT NULL REFERENCES messages(id) ON DELETE CASCADE`だが、現行の`ResponseStreamer.StreamResponse`の順序では、TTS合成(`Synthesize`)が呼ばれる時点でassistantメッセージはまだDB未保存(保存は`SendDone`のタイミング)。D-4通り「Synthesize内部でaudio_filesにINSERT」すると外部キー違反になる。
+
+検討した選択肢: (A)FK制約を外す(最小変更) (B)assistantメッセージ保存を前倒しする(ResponseStreamer/RecordingSink/ChatServiceの責務分割が必要で影響大) (C)別アプローチ。**ユーザーが(A)を選択**。
+
+**対応済み(つむぎ)**:
+- [x] `migrations/0001_initial_schema.up.sql`: `audio_files.message_id`のFK制約撤去(値は設定するが参照整合性は強制しない、`conversation_id`のFK/CASCADEは維持)
+- [x] `docs/02_functional_design/02_database_design.md`・`00_minutes.md`: 記述を実態に合わせて更新
+- [x] `docs/04_implementation/04_realtime_wiring_design.md` D-4を訂正(2026-08-10訂正として経緯を明記、`internal/tts`のI/F変更も必要と判明したことを含む)
+- [x] `tasks/instructions_zundamon_wave_w09.md`作成: `internal/voicevox`新規実装、`tts.TTSClient.Synthesize`のシグネチャ拡張(conversationID/messageID追加)、`ChatService`でのID事前生成、`ResponseStreamer.StreamResponse`のシグネチャ拡張、既存テスト(response_streamer_test.go 16箇所等)の改修を指示
+
+**スキーマ変更の影響で既存テスト2件も修正(つむぎ)**: `tests/integration/audio_fetch_test.go`の`W-02-05`(存在しないmessage_idは外部キー違反でエラー→**FK制約なしでエラーにならない**仕様に書き換え)、`W-02-08`(メッセージ削除でCASCADEにより音声レコードも消える→**FKが無いため連鎖しない、レコードは残る**仕様に書き換え)。テストDB再作成(スキーマ変更反映)後、全緑を実測(DB: `zuncha_test_tsumugi`、build/vet/gofmt/test全緑)。
+
+- [ ] ずんだもんによるW-09実装
+- [ ] そらへW-09レビュー依頼

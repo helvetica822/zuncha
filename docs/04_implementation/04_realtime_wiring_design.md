@@ -122,11 +122,28 @@ IsRecognitionFailed() で判定 → 失敗なら 200 {failed:true} を返し、�
 - **Whisper.cpp の連携方式は `whisper-server` (HTTP) を別コンテナ**とする。cgo バインディングはビルドの複雑さ・クロスコンパイル問題を持ち込み、C-04 (Docker Compose前提) と整合しない。プロセス都度起動 (CLI exec) はモデルロードが毎回走り NF-PERF-01 に反する。
 - 音声形式変換は **API コンテナに ffmpeg を同梱**して行う。フロントで 16kHz PCM WAV を手書きエンコードする案より、標準API (`MediaRecorder`) のままにできてフロントが薄い。
 
-### D-4. TTS: VOICEVOX ラッパー (F-TTS-02/03)
+### D-4. TTS: VOICEVOX ラッパー (F-TTS-02/03) — **2026-08-10 訂正(W-09着手前に発覚)**
 
-- `internal/voicevox` に HTTP クライアントを置き、`tts.TTSClient` を実装する。**`internal/tts` の I/F は変更しない** (差し替え可能性の担保 = NF-MAINT-01)。
+- `internal/voicevox` に HTTP クライアントを置き、`tts.TTSClient` を実装する。
 - `Synthesize` の内部: VOICEVOX `audio_query` → `synthesis` → WAV を `localfs.Write` で保存 → `audio_files` に INSERT → `/audio/{ulid}` を返す。
 - したがって **B-6/B-7 (InsertMessage / InsertAudio / FileStore.Write) は D-4 の前提タスク**。
+
+**訂正1: `internal/tts` の I/F は変更が必要と判明**。当初「`internal/tts` の I/F は変更しない」としていたが、`audio_files` へのINSERTには `conversation_id`・`message_id` が要るのに、`Synthesize(ctx, text)` にはどちらも渡す手段が無いことがW-09着手前のレビューで発覚した。`Synthesize(ctx context.Context, text, conversationID, messageID string) (string, error)` へ拡張する。差し替え可能性(NF-MAINT-01)自体は引数が増えても損なわれないため、この訂正はNF-MAINT-01と矛盾しない。
+
+**訂正2: `audio_files.message_id` の FK 制約(`REFERENCES messages(id) ON DELETE CASCADE`)を撤去**。理由は以下の順序制約による:
+
+1. `ResponseStreamer.StreamResponse` の現行順序は「LLM生成→emotion送出→textチャンク送出→**TTS合成**→audio_url送出→**done(ここでassistantメッセージをDB保存)**」。
+2. TTS合成(`Synthesize`)の時点で `audio_files` へINSERTしようとしても、対応する `messages` 行は**まだ存在しない**(保存はdoneのタイミング)。
+3. さりとて「done後にTTS合成する」順にすると、`SendAudioURL` イベントを送った直後にDB未登録の状態が生じ、フロントが`GET /audio/{id}`を叩くと404になりうる競合を作る。
+4. 「assistantメッセージの保存をTTS合成より前倒しする」案も検討したが、`ResponseStreamer`/`RecordingSink`/`ChatService`の責務分割を大きく変える必要があり、既存テスト(3-2系15件・W-07系)への影響が大きい。
+
+**採用した解決策(ユーザー承認・2026-08-10)**: `message_id`カラムはNOT NULLのまま維持し値も設定するが、FK制約を撤去して単なる紐付け用カラムにする。`conversation_id`のFK(CASCADE)は残るため、会話削除時には音声ファイルも連鎖削除される。assistantメッセージ保存(SendDone)が万一失敗した場合(既存方針で「ログのみで続行」)、対応する`messages`行が無い`audio_files`行が残り得るが、実害は「履歴に音声だけ残り対応テキストが無い」程度で致命的ではない。
+
+**配線の変更点**:
+- `ChatService.HandleUserMessage` で `assistantMessageID := s.newID()` を(履歴取得〜プロンプト組み立ての後、`RecordingSink`構築時に)事前生成する。
+- `RecordingSink` のコンストラクタで、内部の `s.newID()` 呼び出しをやめ、渡された `assistantMessageID` を使う。
+- `ResponseStreamer.StreamResponse` に `conversationID, messageID string` を追加し、`Synthesize` 呼び出し時に渡す。
+- `internal/postgres.AudioRepository.InsertRecord` は既存(W-04で実装済み)のため新規実装は不要。
 
 ### D-5. プロンプト組み立てと応答の永続化 (F-AI-03) — **2026-08-05 改訂**
 
