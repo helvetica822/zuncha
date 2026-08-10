@@ -10,6 +10,11 @@ import (
 	"zuncha/internal/validation"
 )
 
+// error イベントで利用者に見せる文言（仕様書§2.2）。ブラウザのトーストにそのまま出るため、
+// 内部エラー文字列（"llm generate: ..." 等）は載せない。中断理由を細分化しても利用者の
+// 取れる行動は変わらないので、全ステップ同一の1文にする。
+const errMsgGenerateResponse = "応答の生成に失敗しました"
+
 // ResponseStreamer は LLM 生成〜SSE 配信のオーケストレーションを担う。
 type ResponseStreamer struct {
 	llmClient llm.LLMClient
@@ -68,8 +73,9 @@ func (s *ResponseStreamer) StreamResponse(ctx context.Context, sink sse.EventSin
 	return nil
 }
 
-// fail は SendError を送出してから err を返す（中断用ヘルパ）。
+// fail は利用者向け文言で SendError を送出してから err を返す（中断用ヘルパ）。
+// err は呼び出し側・ログ用にそのまま返し、利用者には定数の文言だけを見せる。
 func (s *ResponseStreamer) fail(sink sse.EventSink, err error) error {
-	_ = sink.SendError(err.Error())
+	_ = sink.SendError(errMsgGenerateResponse)
 	return err
 }

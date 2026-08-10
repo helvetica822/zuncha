@@ -567,3 +567,54 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 
 **めたん独立検証**: `TestHTTPConn` 27件PASS、`-race`クリーン、W-03-20〜27の8件確認、二段構え`WriteEvent`・`closeOnce`・Runのdoc comment修正すべて設計どおり(実測DB: `zuncha_test_metan`)。
 現在`W-07-C15`(中断時SendError)と`W-07-R12`(保存用ctx)が赤だが、これは**めたんが出した追加要件をずんだもんがTDDで実装中の状態**。
+
+### WIPコミット(d41188b)でレビュー対象固定 → そらWave B-2レビュー: ⚠要修正(新規3件) (2026-08-07)
+
+ユーザー承認によりWIPコミット運用を開始(以降レビュー依頼時は対象をWIPコミットで固定する)。つむぎが実機再検証(unit 60トップレベルPASS/0 FAIL、integration 18トップレベルPASS/0 FAIL、DB: `zuncha_test_tsumugi`)した上でそらへ再レビュー依頼、残作業3件(①`Done()`二段構え+`sync.Once` ②5秒タイムアウト ③中断時`SendError`)はいずれも実装・テスト担保済みと確認された。
+
+そらが401 PASS/0 FAIL(実測DB: `zuncha_test_sora`)・`-race`クリーンに加え、新規3件を指摘:
+
+- **①【最重要】SSE接続が1本でもあるとグレースフル停止が必ず失敗する**: `Events`は`conn.Run(r.Context())`でブロックするが、`http.Server.Shutdown`はin-flightハンドラの`r.Context()`をキャンセルしない。会話画面はSSEを常設する設計(仕様書§2.3)なのでこれは通常運用の既定経路。`tasks/todo.md:271`の「Shutdownエラーを`log.Fatalf`で顕在化する」という過去のつむぎの判断は「長時間ブロックするハンドラが存在しない」前提だったが、W-06がその前提を崩した。
+- **②SSEのerrorイベントに内部エラー文字列がそのまま出る**: `response_streamer.go`の`fail`が`err.Error()`をそのまま`SendError`に渡し、`"llm generate: ..."`等がブラウザのトーストに出る。同Wave内の`chat.go`は`errMsgSaveUserMessage`等の日本語定数を使っており不整合。
+- **③防壁2のミューテーション要件「20回」が3回にとどまる**: `sse_conn_test.go`のW-03-24が`for i := 0; i < 3; i++`。理論上の見逃し確率3.1%、実測30回中1回すり抜けを観測。
+
+**対応方針(めたん判断・つむぎ代行)を`tasks/instructions_zundamon_wave_b2_fix.md`に指示書化**:
+- ①`internal/httpserver/httpserver.go`の`Run`に`BaseContext`+能動キャンセルを追加。`events.go`・`main.go`は無改変で済む。そらの要望により「SSE接続を張ったまま停止させ`httpserver.Run`が`nil`を返すこと」の回帰テストを`graceful_shutdown_test.go`に追加必須。
+- ②`fail`に利用者向け文言(`errMsgGenerateResponse = "応答の生成に失敗しました"`、仕様書§2.2の例文言)を渡す形に変更。全ステップ同一文言に統一(過剰な細分化を避ける)。テストで内部エラー文字列が漏れないことを固定。
+- ③`for i := 0; i < 20; i++`への1行修正。
+
+- [x] そら指摘3件への対応方針決定・指示書作成
+- [x] ずんだもんによる実装(RED確認→GREEN→ミューテーション実測)
+- [ ] WIPコミットで再固定→そらへ再レビュー依頼(DB: `zuncha_test_sora`、コミットハッシュ明示の要望あり)
+
+### Wave B-2 差し戻し対応(そら指摘①②③) 完了 (2026-08-10, ずんだもん)
+
+指示書 `tasks/instructions_zundamon_wave_b2_fix.md` の①②③をTDDで実装したのだ。**指示書の対処方針から外れた点は無し**。実測DB: `zuncha_test_zundamon`。
+
+**①SSE接続中のグレースフル停止(`internal/httpserver/httpserver.go`)**
+- `Run` に `BaseContext` を追加し、`ctx.Done()` 時に `baseCancel()` で in-flight の `r.Context()` を能動的にキャンセル。`events.go`・`main.go`・`conn.go` は**無改変**(`main.go` は `BaseContext` を自前で設定していないため衝突なし)
+- 回帰テスト `TestGracefulShutdown_SSE接続中でも停止がエラーなく完了する` を `tests/integration/graceful_shutdown_test.go` に追加。実ハンドラ・実DB・実リスナで `/conversations/{id}/events` に接続し、初回フレーム `retry: 3000` の受信＋`hub.ConnCount==1` で接続確立を確定させてから停止をトリガする(sleep非依存)
+- テスト用にハンドラ組み立てだけを `newTestHandler` として `handler_helpers_test.go` から切り出し(`newHandlerFixture` はこれを呼ぶだけの純リファクタ。httptest ではなく実リスナ上で `httpserver.Run` を回す必要があるため)
+- **RED実測**: 対処前は `context deadline exceeded` / 経過 **3.001秒**(=shutdownTimeout満了) / `ConnCount` が 1 のまま、の3点で赤
+- **GREEN実測**: **0.05秒**で `nil` 返却、`ConnCount` 0。既存の `InFlightCompletes...` も引き続き緑
+- **ミューテーション2件**: (A)`baseCancel()` の呼び出しを削除 → FAIL(3.08秒) (B)`srv.BaseContext = ...` の代入を削除 → FAIL(3.08秒)。いずれも復元済み
+
+**②SSE errorイベントの内部エラー文字列(`internal/service/response_streamer.go`)**
+- `const errMsgGenerateResponse = "応答の生成に失敗しました"` を追加し、`fail` は `err.Error()` ではなくこの定数を `SendError` に渡す。`err` は戻り値としてそのまま返す(ログ・呼び出し側用)。`fail` の呼び出し側7箇所は**無変更**
+- 既存テストの `sink.On("SendError", mock.Anything)` 5箇所を固定文言期待へ変更 + 新規テスト `TestResponseStreamer_errorイベントに内部エラー文字列を出さない` を追加。中断が起こり得る**全7ステップ**(llm/parse/emotion検証/emotion送出/textチャンク/audio_url/done)を網羅し、`SendError` の実引数が固定文言と一致し、かつ内部エラー断片9種(`"llm generate:"`, `"client disconnected"` 等)を含まないことを検証
+- **RED実測**: 既存TC-3-2-06が `(string=llm generate: llm unavailable) != (string=応答の生成に失敗しました)` で赤。新規テストも7サブケース全てが赤(`send emotion: client disconnected` 等が実際に漏れていた)
+- **GREEN実測**: `TestResponseStreamer` 系 29 PASS。既存15件は本文無改変のまま緑
+- **ミューテーション2件**: (A)`fail` を `err.Error()` に戻す → FAIL (B)文言を `"エラーが発生しました"` に変える → FAIL。いずれも復元済み
+
+**③防壁2のミューテーション要件20回(`tests/unit/sse_conn_test.go` W-03-24)**
+- `for i := 0; i < 3; i++` → `for i := 0; i < 20; i++` の1行修正(ループ回数以外は無変更)。理由をコメントで固定
+- **ミューテーション実測**(二段構えselectを1つのselectに戻す改変を適用して比較):
+  - 修正後(20回): **10試行中10回FAIL**(見逃し0)
+  - 修正前相当(3回): **30試行中23回FAIL = 7回すり抜け(23%)**。そらの実測(30回中1回すり抜け)より悪い結果で、3回では検知が確率的に破綻していることを追認
+  - `internal/sse/conn.go` は改変→実測→**復元済み**(`git diff` 無出力で確認)
+
+**完了条件の実測結果**
+- `go build ./...` OK / `go vet ./...` OK / `gofmt -l .` 無出力
+- `go test ./tests/... -count=1 -v` → **410 PASS / 0 FAIL / 0 SKIP**(integration 2.9s、unit 0.22s)。前回401から+9(①の1件、②の新規1関数7サブケース+親1)
+- `./scripts/test_race.sh`(docker経由 `-race -count=1`) → integration 5.2s / unit 1.3s、**DATA RACE 0件**
+- コンパイル可能パッケージ: 全パッケージ(`go build ./...` / `go vet ./...` が EXIT 0)

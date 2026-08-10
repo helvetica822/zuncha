@@ -107,6 +107,19 @@ type handlerFixture struct {
 // newHandlerFixture は実DB・実Hub・フェイクLLMで組んだ HTTP サーバを起動する。
 func newHandlerFixture(t *testing.T) *handlerFixture {
 	t.Helper()
+	h, db, hub, llmC := newTestHandler(t)
+
+	server := httptest.NewServer(h.Routes())
+	t.Cleanup(server.Close)
+
+	return &handlerFixture{server: server, db: db, hub: hub, llmC: llmC, client: server.Client()}
+}
+
+// newTestHandler は実DB・実Hub・フェイクLLMでハンドラ一式を組む（サーバの起動方法は呼び出し側に委ねる）。
+// グレースフル停止のテストは httptest ではなく実リスナ上で httpserver.Run を回す必要があるため、
+// ハンドラの組み立てだけを切り出している。
+func newTestHandler(t *testing.T) (*handler.Handler, *sql.DB, *sse.Hub, *fakeLLMClient) {
+	t.Helper()
 	db := setupTestDB(t)
 
 	convRepo := postgres.NewConversationRepository(db)
@@ -129,10 +142,7 @@ func newHandlerFixture(t *testing.T) *handlerFixture {
 		chat, convRepo, hub,
 	)
 
-	server := httptest.NewServer(h.Routes())
-	t.Cleanup(server.Close)
-
-	return &handlerFixture{server: server, db: db, hub: hub, llmC: llmC, client: server.Client()}
+	return h, db, hub, llmC
 }
 
 // seedConversation は会話を1件作って IDを返す。

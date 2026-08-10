@@ -15,7 +15,17 @@ import (
 //   - ctx.Done() で shutdownTimeout を上限に srv.Shutdown を呼び、in-flight リクエストの
 //     完遂を待って新規接続を遮断する。
 //   - Serve が停止トリガより先にエラー終了した場合は、そのエラーを返す。
+//
+// BaseContext を配って停止時に能動的にキャンセルするのは、SSE のように r.Context() が
+// 閉じるまで戻らないハンドラのため。http.Server.Shutdown は in-flight ハンドラの
+// r.Context() をキャンセルしないため、これが無いと SSE 接続が1本でもあるだけで
+// Shutdown は必ず shutdownTimeout 満了までブロックしてタイムアウトする。
 func Run(ctx context.Context, srv *http.Server, ln net.Listener, shutdownTimeout time.Duration) error {
+	// Serve 開始前にセットする必要がある（開始後の代入は競合し、既存接続にも届かない）。
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	defer baseCancel()
+	srv.BaseContext = func(net.Listener) context.Context { return baseCtx }
+
 	serveErr := make(chan error, 1)
 	go func() {
 		err := srv.Serve(ln)
@@ -30,6 +40,8 @@ func Run(ctx context.Context, srv *http.Server, ln net.Listener, shutdownTimeout
 		// 停止トリガより先に Serve が終了した（起動失敗など）。
 		return err
 	case <-ctx.Done():
+		// in-flight の r.Context() を全て即座にキャンセルする。
+		baseCancel()
 		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		return srv.Shutdown(shutCtx)

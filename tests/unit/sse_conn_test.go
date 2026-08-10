@@ -547,7 +547,10 @@ func TestHTTPConn_Done(t *testing.T) {
 		cancel()
 		waitDone(t, conn)
 
-		for i := 0; i < 3; i++ {
+		// 20回呼ぶのは仕様書§2.4.1のミューテーション要件。二段構えの select を1つに戻すと
+		// 1回あたり約50%で成功が返るため、3回では見逃し確率が 0.5³≈12.5%（そらの実測: 30回中1回すり抜け）
+		// と無視できない。20回なら 1−0.5²⁰≈99.9999% で単一実行でも必ず赤くなる。
+		for i := 0; i < 20; i++ {
 			gotErr := writeEventNonBlocking(t, conn, "text", testTextPayload{RequestID: "01J", Chunk: "x"})
 			assert.ErrorIs(t, gotErr, sse.ErrConnClosed, "%d回目", i+1)
 		}

@@ -86,6 +86,18 @@ var _ tts.TTSClient = (*mockTTSClient)(nil)
 var _ sse.TextChunker = (*mockTextChunker)(nil)
 var _ sse.EventSink = (*mockEventSink)(nil)
 
+// wantGenerateErrMessage は SSE の error イベントで利用者に見せる文言（仕様書§2.2）。
+// internal/service 側の errMsgGenerateResponse と同値。ここはブラウザのトーストに
+// そのまま出る文字列なので、内部エラー（"llm generate: ..." 等）が混ざってはならない。
+const wantGenerateErrMessage = "応答の生成に失敗しました"
+
+// 内部エラー文字列の断片。error イベントのメッセージに現れてはいけない。
+var internalErrFragments = []string{
+	"llm generate:", "parse:", "invalid emotion:", "send emotion:",
+	"send text chunk:", "send audio url:", "send done:",
+	"llm unavailable", "client disconnected",
+}
+
 func callOrderOf(sink *mockEventSink) []string {
 	names := make([]string, len(sink.Calls))
 	for i, c := range sink.Calls {
@@ -252,7 +264,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink := new(mockEventSink)
 
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return(nil, errors.New("llm unavailable"))
-		sink.On("SendError", mock.Anything).Return(nil)
+		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
 		err := streamer.StreamResponse(context.Background(), sink, "prompt")
@@ -299,7 +311,7 @@ func TestResponseStreamer(t *testing.T) {
 		// 本来ParseLLMResponse（3-1）のフォールバックにより起こり得ないが、
 		// 防御的チェックの動作を確認するためParserモックで直接不正値を注入する
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "存在しない感情ラベル"}, nil)
-		sink.On("SendError", mock.Anything).Return(nil)
+		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
 		err := streamer.StreamResponse(context.Background(), sink, "prompt")
@@ -376,7 +388,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink.On("SendTextChunk", "c1").Return(nil)
 		// 2番目のチャンク送出中にシンク側で書き込みエラーが発生した状況を模擬する
 		sink.On("SendTextChunk", "c2").Return(errors.New("client disconnected"))
-		sink.On("SendError", mock.Anything).Return(nil)
+		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
 		err := streamer.StreamResponse(context.Background(), sink, "prompt")
@@ -397,7 +409,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink := new(mockEventSink)
 
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return(nil, errors.New("llm unavailable"))
-		sink.On("SendError", mock.Anything).Return(nil)
+		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
 		_ = streamer.StreamResponse(context.Background(), sink, "prompt")
@@ -431,6 +443,94 @@ func TestResponseStreamer(t *testing.T) {
 		require.NoError(t, err)
 		sink.AssertNumberOfCalls(t, "SendDone", 1)
 	})
+}
+
+func TestResponseStreamer_errorイベントに内部エラー文字列を出さない(t *testing.T) {
+	// そら指摘②: fail が err.Error() をそのまま SendError に渡していたため、
+	// "llm generate: llm unavailable" のような内部エラー文字列がブラウザのトーストに出ていた。
+	// 利用者向け文言は全ステップ同一の1文に統一する（同Waveの chat.go の errMsg 定数と同じ扱い）。
+	//
+	// SendError の引数は mock.Anything で受けて「実際に渡された値」を観測する。
+	// 固定文言で On を張ると引数違いが panic になり、何が漏れたのかが分からなくなるため。
+	sendErrorArgs := func(sink *mockEventSink) []string {
+		var args []string
+		for _, c := range sink.Calls {
+			if c.Method == "SendError" {
+				args = append(args, c.Arguments.String(0))
+			}
+		}
+		return args
+	}
+
+	// 中断が起こり得る各ステップを、そのステップで初めて失敗する形に組む。
+	cases := map[string]func(*mockLLMClient, *mockResponseParser, *mockTTSClient, *mockTextChunker, *mockEventSink){
+		"LLM生成の失敗": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return(nil, errors.New("llm unavailable"))
+		},
+		"パースの失敗": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+			p.On("Parse", mock.Anything).Return(nil, errors.New("invalid character '}' looking for beginning of value"))
+		},
+		"emotion不正": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "存在しない感情ラベル"}, nil)
+		},
+		"emotion送出の失敗": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
+			s.On("SendEmotion", mock.Anything).Return(errors.New("client disconnected"))
+		},
+		"textチャンク送出の失敗": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
+			ch.On("Chunk", "text").Return([]string{"c1"})
+			s.On("SendEmotion", mock.Anything).Return(nil)
+			s.On("SendTextChunk", mock.Anything).Return(errors.New("client disconnected"))
+		},
+		"audio_url送出の失敗": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
+			ch.On("Chunk", "text").Return([]string{"c1"})
+			tc.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+			s.On("SendEmotion", mock.Anything).Return(nil)
+			s.On("SendTextChunk", mock.Anything).Return(nil)
+			s.On("SendAudioURL", mock.Anything).Return(errors.New("client disconnected"))
+		},
+		"done送出の失敗": func(l *mockLLMClient, p *mockResponseParser, tc *mockTTSClient, ch *mockTextChunker, s *mockEventSink) {
+			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
+			ch.On("Chunk", "text").Return([]string{"c1"})
+			tc.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+			s.On("SendEmotion", mock.Anything).Return(nil)
+			s.On("SendTextChunk", mock.Anything).Return(nil)
+			s.On("SendAudioURL", mock.Anything).Return(nil)
+			s.On("SendDone").Return(errors.New("client disconnected"))
+		},
+	}
+
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			llmClient := new(mockLLMClient)
+			parser := new(mockResponseParser)
+			ttsClient := new(mockTTSClient)
+			chunker := new(mockTextChunker)
+			sink := new(mockEventSink)
+			setup(llmClient, parser, ttsClient, chunker, sink)
+			sink.On("SendError", mock.Anything).Return(nil)
+
+			streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
+			err := streamer.StreamResponse(context.Background(), sink, "prompt")
+
+			require.Error(t, err, "戻り値には内部エラーを残す（ログ・呼び出し側用）")
+			args := sendErrorArgs(sink)
+			require.Len(t, args, 1)
+			assert.Equal(t, wantGenerateErrMessage, args[0], "全ステップ同一の利用者向け文言であること")
+			for _, fragment := range internalErrFragments {
+				assert.NotContains(t, args[0], fragment,
+					"内部エラー文字列がブラウザのトーストに出てはならない")
+			}
+		})
+	}
 }
 
 func TestResponseStreamer_doneはaudio_url相当の後でのみ送出される(t *testing.T) {
@@ -489,7 +589,7 @@ func TestResponseStreamer_全フローがdoneまたはerrorで終端する(t *te
 
 		if llmErr != nil {
 			llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return(nil, llmErr)
-			sink.On("SendError", mock.Anything).Return(nil)
+			sink.On("SendError", wantGenerateErrMessage).Return(nil)
 		} else {
 			llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 			parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
