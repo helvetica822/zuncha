@@ -713,5 +713,17 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 **対応(つむぎ)**:
 - [x] 指摘2: 設計文書2箇所をつむぎが直接修正
 - [x] 指摘3: `go mod tidy`実行、`go build`/`go vet`で無事故確認
-- [ ] 指摘1: ずんだもんへ差し戻し(TDDでのテスト追加)
+- [x] 指摘1: ずんだもんへ差し戻し(TDDでのテスト追加) → 対応完了
 - [ ] W-09までのcmd/apiクラッシュ問題をユーザーへ申し送り(対応は別Wave)
+
+### ずんだもん指摘1対応・そら最終確認: ✅承認 — Wave C-1品質面完了 (2026-08-10)
+
+`tests/unit/anthropic_client_test.go`のみ変更(プロダクションコード無変更)。`TestGenerateResponse_構造化出力で感情7種のJSONスキーマを強制する`を新規追加し、format.type/emotion enum(7種)/required/additionalPropertiesを検証。enumはリテラル一致に加え`validation.ValidateEmotion()`との突合も追加し、四重管理による静かなズレ(テスト側とschema.go側が同時にズレるケース)も検知できる形にした。WIPコミット(638e88f)で固定、つむぎ独立検証(build/vet/gofmt/全緑、DB: `zuncha_test_tsumugi`)後にそらへ再レビュー依頼。
+
+**そら最終確認**: 独自に組み直したミューテーション12件すべて赤を実測(そらの要求3件より広い範囲: additionalProperties/enum件数/型/正本突合まで確認)。特に「二重ズレ」検証(schema.goとテストの①リテラルを同時に8種目に書き換えても②の`validation.ValidateEmotion`突合で赤になる)を独立実測し、②の設計が空振りでないことまで裏取り。425 PASS/0 FAIL/0 SKIP、raceクリーン(DB: `zuncha_test_sora`)。指摘2・3(設計文書修正・go mod tidy)も再確認済み。
+
+**判定: ✅承認。** ずんだもん提案の教訓(`tasks/lessons.md`)も「今回の穴の本質を正確に言い当てている」と評価。
+
+- [x] Wave C-1 品質面完了(つむぎ最終ゲート: そら承認済み)
+- [ ] **実API疎通確認待ちのためcompletedにはしない**(ユーザーのANTHROPIC_API_KEY発行後に対応)
+- [ ] 次タスク判断: W-09(VOICEVOX/TTS実装)着手 or 他の優先度確認
