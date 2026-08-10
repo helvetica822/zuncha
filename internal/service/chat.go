@@ -66,7 +66,8 @@ func NewChatService(
 //  1. ユーザー発話を保存（失敗したら中断。発話を失ったまま応答してはならない）
 //  2. first_text を記録（冪等なので毎回呼ぶ。失敗はログのみ）
 //  3. 履歴取得 → プロンプト組み立て（1の後なので自分の発話が文脈に入る）
-//  4. sink 構築（Fanout で request_id 注入 → RecordingSink で応答を永続化）
+//  4. assistant メッセージIDの事前採番 → sink 構築（Fanout で request_id 注入 →
+//     RecordingSink で応答を永続化）
 //  5. 応答生成と配信
 //
 // 同一 request_id の2回目以降は何もせず nil を返す（二重送信の第二防衛線・仕様書§3.3）。
@@ -106,14 +107,19 @@ func (s *ChatService) HandleUserMessage(ctx context.Context, conversationID, req
 	}
 	prompt := llm.BuildPrompt(history)
 
+	// assistant メッセージのIDはここで事前採番する。TTS合成(audio_files登録)は
+	// assistant メッセージの保存(SendDone)より先に走るため、両者で同じIDを共有するには
+	// RecordingSink 内での採番では間に合わない（D-4 訂正2）。
+	assistantMessageID := s.newID()
+
 	sink := NewRecordingSink(
 		fanout,
 		s.msgRepo,
 		conversationID,
-		s.newID,
+		assistantMessageID,
 		s.now,
 	)
-	return s.streamer.StreamResponse(ctx, sink, prompt)
+	return s.streamer.StreamResponse(ctx, sink, prompt, conversationID, assistantMessageID)
 }
 
 // markRequest は requestID を処理対象として記録し、新規なら true を返す。

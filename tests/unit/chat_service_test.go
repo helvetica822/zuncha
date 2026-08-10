@@ -90,7 +90,10 @@ func newChatFixture(t *testing.T, history []model.Message) *chatFixture {
 		}).Return([]byte(`{}`), nil)
 	f.parser.On("Parse", mock.Anything).
 		Return(&llm.LLMResponse{Text: "こんにちはなのだ。", Emotion: "喜び"}, nil)
-	f.tts.On("Synthesize", mock.Anything, mock.Anything).Return("", errors.New("tts未実装"))
+	// 既定は TTS 失敗（audio_url をスキップして done へ進む経路）。W-09 で引数が
+	// (ctx, text, conversationID, messageID) の4つになった。
+	f.tts.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return("", errors.New("tts未実装"))
 
 	streamer := service.NewResponseStreamer(f.llmC, f.parser, f.tts, sse.NewSentenceChunker())
 	f.svc = service.NewChatService(
@@ -263,6 +266,45 @@ func TestChatService_HandleUserMessage(t *testing.T) {
 		assert.Equal(t, "こんにちはなのだ。", assistant.Content)
 		require.NotNil(t, assistant.Emotion)
 		assert.Equal(t, "喜び", *assistant.Emotion)
+	})
+
+	t.Run("W-09-C19_事前生成したassistantMessageIDがTTSと保存の両方へ伝播する", func(t *testing.T) {
+		// D-4 訂正: audio_files への登録は assistant メッセージ保存（SendDone）より先に
+		// 行われるため、両者が同じIDを共有できるよう ChatService が事前に採番する。
+		// ここが食い違うと audio_files.message_id が存在しないメッセージを指す。
+		f := newChatFixture(t, nil)
+
+		require.NoError(t, f.svc.HandleUserMessage(context.Background(), chatConvID, chatRequestID, chatUserText))
+
+		var userID, assistantID string
+		for _, call := range f.msgRepo.Calls {
+			if call.Method != "InsertMessage" {
+				continue
+			}
+			msg := call.Arguments.Get(1).(*model.Message)
+			switch msg.Role {
+			case "user":
+				userID = msg.ID
+			case "assistant":
+				assistantID = msg.ID
+			}
+		}
+		require.NotEmpty(t, assistantID)
+		f.tts.AssertNumberOfCalls(t, "Synthesize", 1)
+		f.tts.AssertCalled(t, "Synthesize", mock.Anything, mock.Anything, chatConvID, assistantID)
+		assert.NotEqual(t, userID, assistantID,
+			"ユーザー発話と同じIDを使い回すと messages の主キーが衝突する")
+	})
+
+	t.Run("W-09-C20_TTSへ渡す会話IDはリクエストの会話IDである", func(t *testing.T) {
+		f := newChatFixture(t, nil)
+		other := "01BRZ3NDEKTSV4RRFFQ69G5FAV"
+		f.msgRepo.On("GetRecentMessages", mock.Anything, other).Return([]model.Message(nil), nil)
+		f.convRepo.On("SetFirstText", mock.Anything, other, mock.Anything).Return(nil)
+
+		require.NoError(t, f.svc.HandleUserMessage(context.Background(), other, chatRequestID, chatUserText))
+
+		f.tts.AssertCalled(t, "Synthesize", mock.Anything, mock.Anything, other, mock.Anything)
 	})
 
 	t.Run("W-07-C13_10並列で同一request_idを投げてもLLMは1回だけ", func(t *testing.T) {

@@ -29,27 +29,31 @@ type recordingSink struct {
 	inner          sse.EventSink
 	repo           repository.MessageRepository
 	conversationID string
-	newID          func() string
-	now            func() time.Time
+	// messageID は呼び出し側（ChatService）が事前採番した assistant メッセージのID。
+	// TTS合成(audio_files登録)が SendDone より先行するため、ここで採番すると
+	// audio_files.message_id と一致させられない（D-4 訂正2）。
+	messageID string
+	now       func() time.Time
 
 	emotion *string
 	text    strings.Builder
 }
 
 // NewRecordingSink は inner をラップした EventSink を返す。
-// newID/now は関数として注入する（乱数・時刻に依存させない既存方針と一貫させ、テストで決定化できる）。
+// now は関数として注入する（時刻に依存させない既存方針と一貫させ、テストで決定化できる）。
+// messageID は採番済みの値を受け取る（採番元は ChatService）。
 func NewRecordingSink(
 	inner sse.EventSink,
 	repo repository.MessageRepository,
 	conversationID string,
-	newID func() string,
+	messageID string,
 	now func() time.Time,
 ) sse.EventSink {
 	return &recordingSink{
 		inner:          inner,
 		repo:           repo,
 		conversationID: conversationID,
-		newID:          newID,
+		messageID:      messageID,
 		now:            now,
 	}
 }
@@ -79,7 +83,7 @@ func (s *recordingSink) SendAudioURL(url string) error {
 // 次回の文脈が減るだけで致命的ではない。
 func (s *recordingSink) SendDone() error {
 	msg := &model.Message{
-		ID:             s.newID(),
+		ID:             s.messageID,
 		ConversationID: s.conversationID,
 		Role:           roleAssistant,
 		Content:        s.text.String(),

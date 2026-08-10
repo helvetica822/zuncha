@@ -750,3 +750,48 @@ W-09(VOICEVOX/TTS実装)着手前に設計書D-4を精査したところ、実�
 
 - [ ] ずんだもんによるW-09実装
 - [ ] そらへW-09レビュー依頼
+
+### W-09 VOICEVOX TTS実装（ずんだもん・2026-08-10）
+
+**実装（TDD: RED→GREEN→REFACTOR）**:
+- `internal/voicevox/client.go` 新規: `tts.TTSClient` 実装。`POST /audio_query?text=&speaker=` → クエリJSON取得 → `POST /synthesis?speaker=`（bodyにクエリJSONを**バイト列のまま**渡す）→ WAV → `FileWriter.Write` → `AudioRepository.InsertRecord` → `/audio/{ulid}` を返す。`AudioRepository`/`FileWriter` は消費側で最小I/F定義（`localfs.FileStore.Write` のコメント方針に沿う）。ベースURL・`newID`・`now` は引数注入（`os.Getenv` を本パッケージで読まない既存方針）。
+- `internal/tts/client.go`: `Synthesize(ctx, text, conversationID, messageID)` へ拡張（D-4 訂正1）。
+- `internal/service/chat.go`: `assistantMessageID := s.newID()` を `RecordingSink` 構築直前で事前採番し、`NewRecordingSink` と `StreamResponse` の両方へ渡す。
+- `internal/service/recording_sink.go`: `newID func() string` を `messageID string` に置換（内部採番をやめる。未使用フィールドを残すと「採番元が2つある」誤読を招くため削除した）。
+- `internal/service/response_streamer.go`: `StreamResponse(ctx, sink, prompt, conversationID, messageID)`。TTSへ素通しのみ、既存の中断・TTS失敗スキップの契約は無変更。
+- `cmd/api/main.go`: `ttsClient` nil を `voicevox.NewClient` へ差し替え（そら申し送りの「最初のユーザー発話でプロセスが落ちる」問題の解消）。`VOICEVOX_BASE_URL` を `loadConfig` に追加。
+
+**speaker ID の選定根拠**: `speakerID = 3`（ずんだもん／ノーマル）。VOICEVOX ENGINE の `GET /speakers` が返す `styles[].id` で、既定エンジンの標準割り当て（あまあま=1 / セクシー=5 / ツンツン=7 / ささやき=22 と同系列）。本アプリのキャラクターがずんだもんであり、平常の読み上げに使うため「ノーマル」を選択。コードにコメントで根拠と確認コマンド（`curl -s :50021/speakers | jq ...`）を残した。
+
+**`VOICEVOX_BASE_URL` 未設定時の扱い**: **デフォルト値 `http://localhost:50021`（VOICEVOX標準ポート）を採用**し、`log.Fatal` にはしない。`ANTHROPIC_API_KEY` は秘密情報で推測不能・環境ごとに異なるため未設定即死が妥当だが、VOICEVOXのベースURLは秘密でなく標準ポートが事実上一意に決まるため、未設定を起動時エラーにすると開発時の手間だけが増える。`voicevox.NewClient` は空文字を受けたら生成時にエラーを返すので、「空のまま実行時に初めて落ちる」経路は塞いである。W-11のCompose ではサービス名（例 `http://voicevox:50021`）で上書きする。
+
+**実測（DB: `zuncha_test_zundamon`、スキーマ変更反映のため再作成済み）**:
+- `go test ./tests/... -count=1` 全緑（455 PASS / 0 FAIL / 0 SKIP）、`./scripts/test_race.sh` クリーン
+- `gofmt -l .` 空 / `go vet ./...` EXIT 0 / `go build ./...` 成功
+- `internal/llm`・`internal/anthropic` 無変更（`git diff --stat` で0行）
+- テストは `httptest` のフェイクVOICEVOXのみ。実VOICEVOX（:50021）へは接続しない
+- RED実測2段: ①`internal/voicevox` 未作成で `package ... is not in std`、②I/F変更で `not enough arguments in call to s.ttsClient.Synthesize (have 2, want 4)`
+
+**ミューテーション実測7件（`go test -overlay`、作業ツリー無改変・一時ファイル削除済み・`git status` 確認済み）**:
+
+| # | 改変 | 赤になったテスト |
+|---|---|---|
+| M1 | `speakerID` 3→1（あまあま） | V2 / V3 / V9 |
+| M2 | `audio_query` の結果を `synthesis` へ渡さず自作JSONにする | V4 / V20 / クエリJSON構造非依存 |
+| M3 | `StreamResponse` が TTS へ空文字を渡す | 3-2 新規（TTSへ会話ID/メッセージIDを渡す）/ C19 / C20 |
+| M4 | `ChatService` が TTS 側だけ別採番（IDを共有しない） | C19 |
+| M5 | `Write` と `InsertRecord` の順序入れ替え | V8 / V17 / V18 |
+| M6 | `InsertRecord` 失敗を無視してURLを返す | V18 |
+| M7 | TTS失敗でも `audio_url` を送る（既存テストの退行確認） | **TC-3-2-07** / C11 / C16 / C18 |
+
+M7 により、既存 `response_streamer_test.go` の検知力が引数追加によって落ちていないことを確認した。
+
+**申し送り**:
+1. **孤児ファイルの掃除（別Wave）**: `InsertRecord` 失敗時、WAVは書き込み済みでレコードが無い孤児ファイルが残る（テスト W-09-V18 で挙動を固定）。逆順（登録→書き込み）にすると「レコードはあるがファイルが無い」＝`GET /audio/{id}` が500になる窓ができるため、孤児ファイル側を選んだ。掃除は `internal/gc` の期限切れGCと同じ枠で扱えるはずだが、`audio_files` に載らないファイルなのでファイル走査が必要。W-11以降で検討。
+2. **音声保存先ディレクトリ**: 現状 `defaultAudioDir = /tmp/zuncha/audio`（`WithAudioDir` で差し替え可）。環境変数化はしていない。W-11でボリュームを割り当てる際に `ZUNCHA_AUDIO_DIR` 等を足すか判断が必要。
+3. **申し送り B1-2（配信先0ならTTSをスキップ）は今回入れなかった**: `Hub.Broadcast` が配信先件数を返さないため、スキップ判定には Hub/Fanout/`EventSink` のいずれかの契約変更が必要で、既存の sse 系テストへの波及が大きい。NF-SCALE-01（10人・社内利用）では無駄なTTS 1回のコストが小さく、費用対効果が合わないと判断。B1-2 は「変更余地を残す」までを維持する。
+4. **VOICEVOXの長文リクエスト**: `text` はクエリパラメータで送る（公式の `--get --data-urlencode` と同じ形）。URLエンコード後のリクエストラインが長くなるため、極端な長文（日本語1000文字以上）で実VOICEVOX側の行長上限に当たる可能性がある。テストではフェイク相手に1000文字を通しているが、実エンジンでの上限は未実測。W-11の疎通確認で長めの応答を試すとよい。
+
+- [x] ずんだもんによるW-09実装（緑・race・ミューテーション実測まで完了、**自己完了扱いにはせずin_progress**）
+- [x] つむぎによる独立検証: build/vet/gofmt OK、`go test ./tests/...` 83トップレベルPASS/0 FAIL、`test_race.sh`クリーン(DB: `zuncha_test_tsumugi`)。`internal/llm`/`internal/anthropic`無変更・httptestのみ使用を確認。WIPコミットで固定してそらへレビュー依頼
+- [ ] そらへW-09レビュー依頼

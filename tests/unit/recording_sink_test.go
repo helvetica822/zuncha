@@ -42,13 +42,17 @@ const (
 
 var sinkNow = time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 
-// newTestRecordingSink は決定的な newID/now を注入した RecordingSink を返す。
+// newTestRecordingSink は決定的な messageID/now を注入した RecordingSink を返す。
+//
+// W-09: messageID は「渡された値をそのまま使う」形に変わった（旧: newID func() string を
+// 内部で呼ぶ）。TTS合成が assistant メッセージ保存より先行するため、audio_files と
+// messages で同じIDを共有する必要があり、採番は ChatService 側へ移した（D-4 訂正2）。
 func newTestRecordingSink(repo repository.MessageRepository, inner *mockEventSink) sse.EventSink {
 	return service.NewRecordingSink(
 		inner,
 		repo,
 		sinkConvID,
-		func() string { return sinkMessageID },
+		sinkMessageID,
 		func() time.Time { return sinkNow },
 	)
 }

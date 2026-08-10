@@ -25,7 +25,7 @@ import (
 	"zuncha/internal/postgres"
 	"zuncha/internal/service"
 	"zuncha/internal/sse"
-	"zuncha/internal/tts"
+	"zuncha/internal/voicevox"
 )
 
 const (
@@ -34,9 +34,14 @@ const (
 	envDatabaseURL     = "ZUNCHA_DATABASE_URL"
 	envAllowedOrigins  = "ZUNCHA_ALLOWED_ORIGINS"
 	envAnthropicAPIKey = "ANTHROPIC_API_KEY"
-	readHeaderTimeout  = 10 * time.Second
-	shutdownTimeout    = 10 * time.Second
-	allowedOriginsSep  = ","
+	envVoicevoxBaseURL = "VOICEVOX_BASE_URL"
+	// defaultVoicevoxBaseURL は VOICEVOX ENGINE の標準ポート。ANTHROPIC_API_KEY と違い
+	// 秘密情報でも環境ごとに変わる値でもなく、開発時は既定値でそのまま動くため、
+	// 未設定を起動時エラーにせずデフォルトを与える（W-11 の Compose ではサービス名で上書きする）。
+	defaultVoicevoxBaseURL = "http://localhost:50021"
+	readHeaderTimeout      = 10 * time.Second
+	shutdownTimeout        = 10 * time.Second
+	allowedOriginsSep      = ","
 )
 
 // config は環境変数から読み込むサーバ設定。
@@ -45,6 +50,7 @@ type config struct {
 	databaseURL     string
 	allowedOrigins  []string
 	anthropicAPIKey string
+	voicevoxBaseURL string
 }
 
 func loadConfig() config {
@@ -53,9 +59,13 @@ func loadConfig() config {
 		databaseURL:     os.Getenv(envDatabaseURL),
 		allowedOrigins:  parseAllowedOrigins(os.Getenv(envAllowedOrigins)),
 		anthropicAPIKey: os.Getenv(envAnthropicAPIKey),
+		voicevoxBaseURL: os.Getenv(envVoicevoxBaseURL),
 	}
 	if c.port == "" {
 		c.port = defaultPort
+	}
+	if c.voicevoxBaseURL == "" {
+		c.voicevoxBaseURL = defaultVoicevoxBaseURL
 	}
 	return c
 }
@@ -104,13 +114,21 @@ func main() {
 	}
 	parser := llm.NewDefaultParser()
 
-	// TODO(W-09): TTSClient(VOICEVOX) の実装が揃い次第ここへ差し替える。
-	// ResponseStreamer と ChatService の配線自体は確定済み。
-	var ttsClient tts.TTSClient
+	newULID := func() string { return ulid.Make().String() }
+
+	// TTSClient が nil のままだと最初のユーザー発話で nil ポインタ参照になりプロセスが
+	// 落ちる（そらの申し送り）。ここで実装を注入することで解消する。
+	ttsClient, err := voicevox.NewClient(cfg.voicevoxBaseURL, audioRepo, files, newULID, time.Now)
+	if err != nil {
+		// loadConfig がデフォルトURLを補うため、現状この分岐は到達しない（多層防御として残す）。
+		// 将来 defaultVoicevoxBaseURL を撤廃して必須設定にした場合にここが効く。
+		log.Fatalf("VOICEVOXクライアントの生成に失敗: %v", err)
+	}
+
 	streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, sse.NewSentenceChunker())
 	chat := service.NewChatService(
 		msgRepo, convRepo, streamer, hub,
-		func() string { return ulid.Make().String() },
+		newULID,
 		time.Now,
 	)
 

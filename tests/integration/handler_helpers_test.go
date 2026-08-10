@@ -88,10 +88,12 @@ func (fakeResponseParser) Parse(body []byte) (*llm.LLMResponse, error) {
 	return &llm.LLMResponse{Text: "こんにちはなのだ。", Emotion: "喜び"}, nil
 }
 
-// fakeTTSClient は常に失敗する（TTS は W-09 で実装するため、ここでは audio_url をスキップさせる）。
+// fakeTTSClient は常に失敗する（ハンドラ結合テストでは audio_url をスキップさせる。
+// 実 VOICEVOX への依存をテストへ持ち込まない）。
+// W-09 で Synthesize の引数に conversationID/messageID が加わった（D-4 訂正1）。
 type fakeTTSClient struct{}
 
-func (fakeTTSClient) Synthesize(ctx context.Context, text string) (string, error) {
+func (fakeTTSClient) Synthesize(ctx context.Context, text, conversationID, messageID string) (string, error) {
 	return "", context.Canceled
 }
 

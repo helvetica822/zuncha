@@ -34,7 +34,15 @@ func NewResponseStreamer(
 
 // StreamResponse は prompt への応答を生成し sink へ順に配信する。
 // 各致命ステップの失敗は SendError に切替えて中断する。TTS失敗のみスキップして続行する。
-func (s *ResponseStreamer) StreamResponse(ctx context.Context, sink sse.EventSink, prompt string) error {
+//
+// conversationID/messageID は TTS へ素通しする（audio_files への登録に必要。
+// docs/04_implementation/04_realtime_wiring_design.md D-4 訂正1）。messageID は
+// 呼び出し側が事前採番した assistant メッセージのID。
+func (s *ResponseStreamer) StreamResponse(
+	ctx context.Context,
+	sink sse.EventSink,
+	prompt, conversationID, messageID string,
+) error {
 	raw, err := s.llmClient.GenerateResponse(ctx, prompt)
 	if err != nil {
 		return s.fail(sink, fmt.Errorf("llm generate: %w", err))
@@ -61,7 +69,8 @@ func (s *ResponseStreamer) StreamResponse(ctx context.Context, sink sse.EventSin
 	}
 
 	// TTS は失敗しても致命的にしない（audio_url をスキップして done へ）。
-	if url, ttsErr := s.ttsClient.Synthesize(ctx, resp.Text); ttsErr == nil {
+	// 読み上げは応答全文（チャンクではない。申し送り B1-1）。
+	if url, ttsErr := s.ttsClient.Synthesize(ctx, resp.Text, conversationID, messageID); ttsErr == nil {
 		if err := sink.SendAudioURL(url); err != nil {
 			return s.fail(sink, fmt.Errorf("send audio url: %w", err))
 		}

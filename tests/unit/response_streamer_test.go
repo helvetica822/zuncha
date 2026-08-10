@@ -38,8 +38,8 @@ func (m *mockResponseParser) Parse(body []byte) (*llm.LLMResponse, error) {
 
 type mockTTSClient struct{ mock.Mock }
 
-func (m *mockTTSClient) Synthesize(ctx context.Context, text string) (string, error) {
-	args := m.Called(ctx, text)
+func (m *mockTTSClient) Synthesize(ctx context.Context, text, conversationID, messageID string) (string, error) {
+	args := m.Called(ctx, text, conversationID, messageID)
 	return args.String(0), args.Error(1)
 }
 
@@ -91,6 +91,13 @@ var _ sse.EventSink = (*mockEventSink)(nil)
 // そのまま出る文字列なので、内部エラー（"llm generate: ..." 等）が混ざってはならない。
 const wantGenerateErrMessage = "応答の生成に失敗しました"
 
+// StreamResponse へ渡す会話ID・assistantメッセージID（W-09 で追加された引数）。
+// audio_files への登録に必要なため TTS へ素通しされる（D-4 訂正1）。
+const (
+	streamerConvID    = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	streamerMessageID = "01JASSISTANTMESSAGE0000000"
+)
+
 // 内部エラー文字列の断片。error イベントのメッセージに現れてはいけない。
 var internalErrFragments = []string{
 	"llm generate:", "parse:", "invalid emotion:", "send emotion:",
@@ -126,14 +133,14 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", []byte("raw")).Return(&llm.LLMResponse{Text: "こんにちはなのだ", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "こんにちはなのだ").Return([]string{"こんにちはなのだ"})
-		ttsClient.On("Synthesize", mock.Anything, "こんにちはなのだ").Return("/audio/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+		ttsClient.On("Synthesize", mock.Anything, "こんにちはなのだ", mock.Anything, mock.Anything).Return("/audio/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
 		sink.On("SendEmotion", "喜び").Return(nil)
 		sink.On("SendTextChunk", "こんにちはなのだ").Return(nil)
 		sink.On("SendAudioURL", "/audio/01ARZ3NDEKTSV4RRFFQ69G5FAV").Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		assert.Equal(t, []string{"SendEmotion", "SendTextChunk", "SendAudioURL", "SendDone"}, callOrderOf(sink))
@@ -149,14 +156,14 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"c1", "c2", "c3"})
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendAudioURL", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		names := callOrderOf(sink)
@@ -181,14 +188,14 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "こんにちは", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "こんにちは").Return([]string{"こんにちは"})
-		ttsClient.On("Synthesize", mock.Anything, "こんにちは").Return("/audio/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
+		ttsClient.On("Synthesize", mock.Anything, "こんにちは", mock.Anything, mock.Anything).Return("/audio/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendAudioURL", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		sink.AssertCalled(t, "SendEmotion", "喜び")
@@ -206,14 +213,14 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"text"})
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendAudioURL", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		names := callOrderOf(sink)
@@ -235,7 +242,7 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return(wantChunks)
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		for _, c := range wantChunks {
 			sink.On("SendTextChunk", c).Return(nil)
@@ -244,7 +251,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		var gotChunks []string
@@ -267,7 +274,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		assert.Error(t, err)
 		sink.AssertNumberOfCalls(t, "SendError", 1)
@@ -286,13 +293,13 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"text"})
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("", errors.New("voicevox unavailable"))
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("", errors.New("voicevox unavailable"))
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err, "TTS失敗時もStreamResponse自体はerrorを返さない（doneで完了扱いにするため）")
 		sink.AssertNotCalled(t, "SendAudioURL", mock.Anything)
@@ -314,7 +321,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		assert.Error(t, err)
 		sink.AssertNotCalled(t, "SendEmotion", mock.Anything)
@@ -331,14 +338,14 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"text"})
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendAudioURL", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		names := callOrderOf(sink)
@@ -355,14 +362,14 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"c1", "c2", "c3"})
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendAudioURL", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		names := callOrderOf(sink)
@@ -391,7 +398,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		assert.Error(t, err)
 		sink.AssertNumberOfCalls(t, "SendTextChunk", 2)
@@ -412,7 +419,7 @@ func TestResponseStreamer(t *testing.T) {
 		sink.On("SendError", wantGenerateErrMessage).Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		_ = streamer.StreamResponse(context.Background(), sink, "prompt")
+		_ = streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		sink.AssertNumberOfCalls(t, "SendError", 1)
 		sink.AssertNumberOfCalls(t, "SendEmotion", 0)
@@ -431,18 +438,48 @@ func TestResponseStreamer(t *testing.T) {
 		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"text"})
-		ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+		ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 		sink.On("SendEmotion", mock.Anything).Return(nil)
 		sink.On("SendTextChunk", mock.Anything).Return(nil)
 		sink.On("SendAudioURL", mock.Anything).Return(nil)
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		err := streamer.StreamResponse(context.Background(), sink, "prompt")
+		err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 		require.NoError(t, err)
 		sink.AssertNumberOfCalls(t, "SendDone", 1)
 	})
+}
+
+func TestResponseStreamer_TTSへ会話IDとメッセージIDを渡す(t *testing.T) {
+	// W-09: audio_files への登録には conversation_id・message_id が必要で、
+	// Synthesize(ctx, text) には渡す手段が無かった（D-4 訂正1）。
+	// StreamResponse が受けた値をそのまま素通しすることを固定する。
+	llmClient := new(mockLLMClient)
+	parser := new(mockResponseParser)
+	ttsClient := new(mockTTSClient)
+	chunker := new(mockTextChunker)
+	sink := new(mockEventSink)
+
+	llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+	parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "こんにちはなのだ", Emotion: "喜び"}, nil)
+	chunker.On("Chunk", "こんにちはなのだ").Return([]string{"こんにちは", "なのだ"})
+	ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return("/audio/x", nil)
+	sink.On("SendEmotion", mock.Anything).Return(nil)
+	sink.On("SendTextChunk", mock.Anything).Return(nil)
+	sink.On("SendAudioURL", mock.Anything).Return(nil)
+	sink.On("SendDone").Return(nil)
+
+	streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
+	err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
+
+	require.NoError(t, err)
+	ttsClient.AssertNumberOfCalls(t, "Synthesize", 1)
+	// 読み上げ対象はチャンクではなく応答全文（申し送り B1-1 の固定）。
+	ttsClient.AssertCalled(t, "Synthesize", mock.Anything, "こんにちはなのだ",
+		streamerConvID, streamerMessageID)
 }
 
 func TestResponseStreamer_errorイベントに内部エラー文字列を出さない(t *testing.T) {
@@ -491,7 +528,7 @@ func TestResponseStreamer_errorイベントに内部エラー文字列を出さ�
 			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 			ch.On("Chunk", "text").Return([]string{"c1"})
-			tc.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+			tc.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 			s.On("SendEmotion", mock.Anything).Return(nil)
 			s.On("SendTextChunk", mock.Anything).Return(nil)
 			s.On("SendAudioURL", mock.Anything).Return(errors.New("client disconnected"))
@@ -500,7 +537,7 @@ func TestResponseStreamer_errorイベントに内部エラー文字列を出さ�
 			l.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
 			p.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 			ch.On("Chunk", "text").Return([]string{"c1"})
-			tc.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+			tc.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 			s.On("SendEmotion", mock.Anything).Return(nil)
 			s.On("SendTextChunk", mock.Anything).Return(nil)
 			s.On("SendAudioURL", mock.Anything).Return(nil)
@@ -519,7 +556,7 @@ func TestResponseStreamer_errorイベントに内部エラー文字列を出さ�
 			sink.On("SendError", mock.Anything).Return(nil)
 
 			streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-			err := streamer.StreamResponse(context.Background(), sink, "prompt")
+			err := streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 
 			require.Error(t, err, "戻り値には内部エラーを残す（ログ・呼び出し側用）")
 			args := sendErrorArgs(sink)
@@ -546,9 +583,9 @@ func TestResponseStreamer_doneはaudio_url相当の後でのみ送出される(t
 		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: "text", Emotion: "喜び"}, nil)
 		chunker.On("Chunk", "text").Return([]string{"text"})
 		if ttsErr != nil {
-			ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("", ttsErr)
+			ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("", ttsErr)
 		} else {
-			ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+			ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 			sink.On("SendAudioURL", mock.Anything).Return(nil)
 		}
 		sink.On("SendEmotion", mock.Anything).Return(nil)
@@ -556,7 +593,7 @@ func TestResponseStreamer_doneはaudio_url相当の後でのみ送出される(t
 		sink.On("SendDone").Return(nil)
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		_ = streamer.StreamResponse(context.Background(), sink, "prompt")
+		_ = streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 		return sink
 	}
 
@@ -598,15 +635,15 @@ func TestResponseStreamer_全フローがdoneまたはerrorで終端する(t *te
 			sink.On("SendTextChunk", mock.Anything).Return(nil)
 			sink.On("SendDone").Return(nil)
 			if ttsErr != nil {
-				ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("", ttsErr)
+				ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("", ttsErr)
 			} else {
-				ttsClient.On("Synthesize", mock.Anything, mock.Anything).Return("/audio/x", nil)
+				ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
 				sink.On("SendAudioURL", mock.Anything).Return(nil)
 			}
 		}
 
 		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
-		_ = streamer.StreamResponse(context.Background(), sink, "prompt")
+		_ = streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID)
 		return sink
 	}
 
