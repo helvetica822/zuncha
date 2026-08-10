@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"zuncha/internal/anthropic"
+	"zuncha/internal/validation"
 )
 
 const (
@@ -88,9 +89,11 @@ func TestGenerateResponse_単一TextBlockのJSONをそのままバイト列で�
 	assert.Equal(t, want, string(got))
 }
 
-func TestGenerateResponse_リクエストボディが確定仕様どおりである(t *testing.T) {
-	var body map[string]any
+// captureRequestBody は GenerateResponse が実際に送信したリクエストボディを取得する。
+func captureRequestBody(t *testing.T) map[string]any {
+	t.Helper()
 
+	var body map[string]any
 	c, _ := newFakeAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
@@ -100,6 +103,12 @@ func TestGenerateResponse_リクエストボディが確定仕様どおりであ
 
 	_, err := c.GenerateResponse(context.Background(), "テスト発話")
 	require.NoError(t, err)
+	require.NotNil(t, body, "リクエストボディを取得できていること")
+	return body
+}
+
+func TestGenerateResponse_リクエストボディが確定仕様どおりである(t *testing.T) {
+	body := captureRequestBody(t)
 
 	// モデルIDは日付サフィックスなしの素の文字列。
 	assert.Equal(t, wantModel, body["model"])
@@ -128,6 +137,57 @@ func TestGenerateResponse_リクエストボディが確定仕様どおりであ
 	outputConfig, ok := body["output_config"].(map[string]any)
 	require.True(t, ok, "output_config が送信されていること")
 	assert.Equal(t, "low", outputConfig["effort"])
+}
+
+// 構造化出力(output_config.format)は F-AI-02 の {text, emotion} 同時出力を強制する1枚目の防壁。
+// ここが黙って外れる/enumが1文字ズレると、7種外が返って ParseLLMResponse が毎回
+// 「困惑」フォールバックし、F-AI-02 が静かに壊れる（エラーにならないので気づけない）。
+func TestGenerateResponse_構造化出力で感情7種のJSONスキーマを強制する(t *testing.T) {
+	body := captureRequestBody(t)
+
+	outputConfig, ok := body["output_config"].(map[string]any)
+	require.True(t, ok, "output_config が送信されていること")
+
+	format, ok := outputConfig["format"].(map[string]any)
+	require.True(t, ok, "output_config.format が送信されていること（構造化出力が無効化されていない）")
+	assert.Equal(t, "json_schema", format["type"])
+
+	schema, ok := format["schema"].(map[string]any)
+	require.True(t, ok, "format.schema が送信されていること")
+	assert.Equal(t, "object", schema["type"])
+	// additionalProperties:false と required が無いと構造化出力は形を強制できない。
+	assert.Equal(t, false, schema["additionalProperties"])
+	assert.ElementsMatch(t, []any{"text", "emotion"}, schema["required"],
+		"text と emotion の両方を必須にすること")
+
+	properties, ok := schema["properties"].(map[string]any)
+	require.True(t, ok, "schema.properties が送信されていること")
+
+	text, ok := properties["text"].(map[string]any)
+	require.True(t, ok, "properties.text が存在すること")
+	assert.Equal(t, "string", text["type"])
+
+	emotion, ok := properties["emotion"].(map[string]any)
+	require.True(t, ok, "properties.emotion が存在すること")
+	assert.Equal(t, "string", emotion["type"])
+
+	// ① 仕様の再掲としての完全一致（docs/02_functional_design/02_database_design.md のDDL CHECK制約と同一）。
+	assert.Equal(t, []any{"喜び", "怒り", "悲しみ", "楽しい", "照れ", "困惑", "ドヤ顔"}, emotion["enum"],
+		"感情ラベル7種をenumで強制すること")
+
+	// ② 真実の源泉との突合。①だけだとテスト側とschema.go側が同時にズレたとき素通りするため、
+	//    validation（DDLと同一のホワイトリスト）でも1件ずつ検証する。
+	enum, ok := emotion["enum"].([]any)
+	require.True(t, ok, "emotion.enum が配列であること")
+	require.Len(t, enum, 7, "感情ラベルはちょうど7種")
+	for _, e := range enum {
+		label, ok := e.(string)
+		require.Truef(t, ok, "enum要素は文字列であること: %#v", e)
+		assert.NoErrorf(t, validation.ValidateEmotion(&label),
+			"enum の %q が validation の7種に含まれていない（DDL CHECK制約違反になる）", label)
+	}
+	// 「迷ったら困惑」（SystemPrompt）とパーサのフォールバック先が enum に無いと退避先を失う。
+	assert.Contains(t, enum, any(validation.FallbackEmotion))
 }
 
 func TestGenerateResponse_複数TextBlockは連結される(t *testing.T) {
