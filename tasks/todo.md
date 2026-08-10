@@ -618,3 +618,40 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 - `go test ./tests/... -count=1 -v` → **410 PASS / 0 FAIL / 0 SKIP**(integration 2.9s、unit 0.22s)。前回401から+9(①の1件、②の新規1関数7サブケース+親1)
 - `./scripts/test_race.sh`(docker経由 `-race -count=1`) → integration 5.2s / unit 1.3s、**DATA RACE 0件**
 - コンパイル可能パッケージ: 全パッケージ(`go build ./...` / `go vet ./...` が EXIT 0)
+
+- [x] WIPコミット(8a5e934)で再固定→そらへ再レビュー依頼
+
+### そら再レビュー(8a5e934): ⚠要修正(新規2件) (2026-08-10)
+
+①②③自体はミューテーション実測込みで解消確認(そら実測DB: `zuncha_test_sora`、410 PASS/0 FAIL、raceクリーン)。①の設計変更(BaseContext能動キャンセル)に伴う新たな不整合2件:
+
+- **【A】in-flight完遂の保証喪失と文書の食い違い**: `baseCancel()`が`Shutdown()`前に呼ばれるため、`r.Context()`を参照するハンドラ(`CreateConversation`等)は停止トリガで打ち切られる(そら実測: 200→500)。`httpserver.go`のdocコメント・`03_single_instance_smoke.md:46`・`graceful_shutdown_test.go:75`が「in-flightは完遂する」という古い記述のまま。
+- **【B】①の回帰テストがDB未設定で無言スキップ**: `TestGracefulShutdown_SSE接続中でも停止がエラーなく完了する`は`newTestHandler`経由でDBに依存し、ファイル冒頭の「DB非依存=skipなし」というコメントと矛盾。
+
+**対応方針(つむぎ判断・シンプルさ優先で確定)**: 猶予時間を挟む案(`time.AfterFunc`でノブ追加)は不採用。SSE等の長寿命接続はどのみち`shutdownTimeout`で打ち切られ効果が薄く、複雑さが増すだけ。**実態に文書を合わせる**方向とし、`tasks/instructions_zundamon_wave_b2_fix.md`に追補として指示書化(3ファイルのコメント修正+DB非依存の新規回帰テスト1件)。
+
+- [x] 追補①②の対応方針決定・指示書追記
+- [x] ずんだもんによる追補実装
+- [ ] WIPコミットで再固定→そらへ再レビュー依頼
+
+### Wave B-2 追補対応(そら再レビュー指摘【A】【B】) 完了 (2026-08-10, ずんだもん)
+
+指示書 `tasks/instructions_zundamon_wave_b2_fix.md` の「追補」セクションのみを対応したのだ(①②③本体は無改変)。**指示書の対処方針から外れた点は無し**。実測DB: `zuncha_test_zundamon`。
+
+**【A】文書・コメントを実態に合わせる(挙動変更なし)**
+- `internal/httpserver/httpserver.go` の `Run` docコメント: 「in-flight リクエストの完遂を待って新規接続を遮断する」→「新規接続を遮断し、同時に in-flight の `r.Context()` も能動的にキャンセルする。`r.Context()` を参照しないハンドラの処理は完遂するが、`r.Context()` に依存する処理は打ち切られる」に書き換え。**コードは1行も変更していない**(`git diff` は docコメントのみ)
+- `docs/04_implementation/03_single_instance_smoke.md`: §3の期待値を「中断されずレスポンスを受け取れる」→「`r.Context()`を参照しない処理は完遂する」に修正し、能動キャンセルにより`r.Context()`依存の処理(DBクエリ・SSE配信)は打ち切られエラー応答/接続断になり得る旨を子項目で明記。あわせて§3見出し(「in-flight完遂の目視」)と「自動テストとの対応」表の該当行も実態に合わせた
+- `tests/integration/graceful_shutdown_test.go:75` 付近: アサーション自体は無変更(このスタブは`r.Context()`を参照しないため実際に完遂する)。「このスタブは`r.Context()`を参照しないため打ち切られない/`r.Context()`依存の挙動は`TestGracefulShutdown_CtxDependentHandlerIsCanceled`を参照」という補足コメントを追加し、メッセージ文言も「r.Context()を参照しないin-flightリクエストは完遂する」に具体化
+
+**【B】DB非依存の回帰テストを追加**
+- ファイル冒頭コメントの「DB非依存＝skipなし」を、「原則DB非依存。ただし`TestGracefulShutdown_SSE接続中でも...`は実ハンドラ経由でDBに依存するため例外でskipされ得る。同じ性質はDB非依存の新規テストが担保する」という趣旨に修正
+- 新規テスト `TestGracefulShutdown_CtxDependentHandlerIsCanceled` を追加。`<-r.Context().Done()` で待つだけのスタブハンドラ(= `events.go` の `conn.Run(r.Context())` と同じ性質だけを抽出)を使い、**SSEハンドラ・Hub・DBに一切依存せず**に ①`r.Context()`が停止トリガでキャンセルされる(`ErrorIs(context.Canceled)`) ②`Run`が`nil`を返す ③`shutdownTimeout/2`未満で戻る、の3点を検証。sleep非依存(channel同期)
+- **ミューテーション実測2件**(いずれも実施後に復元済み・`git diff`でコード差分なしを確認):
+  - (A)`baseCancel()` の呼び出しを削除 → **FAIL**(`context deadline exceeded` / 経過 3.0007秒 = shutdownTimeout満了)
+  - (B)`srv.BaseContext = ...` の代入を削除 → **FAIL**(「r.Context() 依存ハンドラが打ち切られなかった」/ 8.00秒)
+
+**完了条件の実測結果**
+- `go build ./...` OK / `go vet ./...` OK / `gofmt -l .` 無出力
+- `go test ./tests/... -count=1 -v`(DB: `zuncha_test_zundamon`) → **411 PASS / 0 FAIL / 0 SKIP**(トップレベル63件。integration 3.7s、unit 0.22s)。前回410から+1(新規テスト1件)
+- `unset ZUNCHA_TEST_DATABASE_URL` 状態での `go test ./tests/integration/... -run TestGracefulShutdown -v` → `InFlightCompletesAndNewConnRefused` **PASS** / `CtxDependentHandlerIsCanceled` **PASS(skipされない)** / `SSE接続中でも停止がエラーなく完了する` **SKIP**。指示どおり両方を確認
+- `./scripts/test_race.sh`(docker経由 `-race -count=1`) → integration 5.9s / unit 1.3s、**DATA RACE 0件**

@@ -31,7 +31,7 @@ curl -s -o /dev/null -w "%{http_code}\n" localhost:8090/audio/01ARZ3NDEKTSV4RRFF
 
 **期待**: 201(会話作成)・404(未登録音声)。
 
-### 3. グレースフルシャットダウン(in-flight完遂の目視)
+### 3. グレースフルシャットダウン(in-flightの扱いの目視)
 
 1. 別ターミナルでリクエストを投げつつ、
 2. サーバプロセスへ `SIGTERM`(または Ctrl+C=`SIGINT`)を送る。
@@ -43,7 +43,8 @@ kill -TERM <server_pid>
 
 **期待**:
 - サーバログに `サーバを停止しました` が出て正常終了する(パニック・強制終了ではない)。
-- 送信中(in-flight)だったリクエストは中断されずレスポンスを受け取れる(`shutdownTimeout`=10秒以内)。
+- 送信中(in-flight)だったリクエストのうち、`r.Context()`を参照しない処理は完遂しレスポンスを受け取れる(`shutdownTimeout`=10秒以内)。
+  - 停止トリガ時に in-flight の `r.Context()` は能動的にキャンセルされる(SSEのように`r.Context()`が閉じるまで戻らないハンドラを終わらせるため)。そのため`r.Context()`に依存する処理(DBクエリ・SSE配信など)は打ち切られ、クライアントはエラー応答や接続断を受け取り得る。
 - シャットダウン開始後の**新規**接続は拒否される(`curl: (7) Failed to connect`)。
 
 ### 4. 単一インスタンスであることの確認
@@ -59,7 +60,7 @@ PORT=8090 go run ./cmd/api   # → listen tcp :8090: bind: address already in us
 
 | 観点 | 手段 |
 |---|---|
-| in-flightリクエストの完遂 | 自動: `tests/integration/graceful_shutdown_test.go`(channel同期で決定的) |
+| in-flightリクエストの扱い(`r.Context()`非参照は完遂 / 依存する処理は打ち切り) | 自動: `tests/integration/graceful_shutdown_test.go`(channel同期で決定的) |
 | 停止後の新規接続遮断 | 自動: 同上 |
 | グレースフル停止ログ・正常終了 | 手動: 本手順 §3 |
 | 多重起動不可(ポート占有) | 手動: 本手順 §4 |

@@ -12,8 +12,10 @@ import (
 
 // Run は ln 上で srv を起動し、ctx がキャンセルされたらグレースフルに停止する。
 //   - srv.Serve は別 goroutine で起動する（http.ErrServerClosed は正常終了として nil 扱い）。
-//   - ctx.Done() で shutdownTimeout を上限に srv.Shutdown を呼び、in-flight リクエストの
-//     完遂を待って新規接続を遮断する。
+//   - ctx.Done() で新規接続を遮断し（shutdownTimeout を上限に srv.Shutdown を呼ぶ）、
+//     同時に in-flight リクエストの r.Context() も能動的にキャンセルする。
+//     したがって r.Context() を参照しないハンドラの処理は最後まで完遂するが、
+//     r.Context() に依存する処理（キャンセルで中断するもの）はその場で打ち切られる。
 //   - Serve が停止トリガより先にエラー終了した場合は、そのエラーを返す。
 //
 // BaseContext を配って停止時に能動的にキャンセルするのは、SSE のように r.Context() が
