@@ -727,3 +727,9 @@ IT-1(CORS)・IT-2(単一インスタンス)は実装+そら✅承認で完了。
 - [x] Wave C-1 品質面完了(つむぎ最終ゲート: そら承認済み)
 - [ ] **実API疎通確認待ちのためcompletedにはしない**(ユーザーのANTHROPIC_API_KEY発行後に対応)
 - [ ] 次タスク判断: W-09(VOICEVOX/TTS実装)着手 or 他の優先度確認
+
+**実API疎通確認時の切り分けガイド(ずんだもん申し送り、ユーザーがキー発行後に踏む可能性が高い順)**:
+1. **最初に踏むのはTTSクラッシュの可能性が高い**: 症状は「LLMは成功しテキストは流れるが、その直後にAPIプロセスごと落ちる」。W-09未実装による既知の状態でW-08の欠陥ではない。
+2. **400が出た場合の切り分け順**: `output_config.format`(json_schema) → `output_config.effort:"low"` → `system`のCacheControl、の順で外して試す。退避は`internal/anthropic/client.go`の`Format:`1行を消すだけで済む構造(ただしテストが赤くなるのでテスト側の対応も必要)。
+3. **401なら`errors.As`で`*anthropic.Error`の`StatusCode`が取れる**のでログで判別可能。APIキー・プロンプト本文はログに出ない設計。
+4. **プロンプトキャッシュの確認**は`usage.cache_read_input_tokens`を見る。ゼロが続くならシステムプロンプトが揺れているか、Opus 5の最小キャッシュ長(512トークン)に`SystemPrompt`が届いていない可能性(定数なので通常揺れないはずだが実測が必要)。
