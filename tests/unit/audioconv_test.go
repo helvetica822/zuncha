@@ -67,9 +67,10 @@ func TestWrapPCMAsWAV_ヘッダの各フィールド(t *testing.T) {
 func TestWrapPCMAsWAV_サイズフィールドは実長を反映する(t *testing.T) {
 	// ffmpeg の wav マルチプレクサはパイプ出力(非シーク可能)だと
 	// サイズを 0xFFFFFFFF のまま残す（libavformat/wavenc.c: wav_write_trailer は
-	// AVIO_SEEKABLE_NORMAL のときしか ff_end_tag を呼ばない）。
-	// whisper-server 側は miniaudio の ma_decoder_get_length_in_pcm_frames の戻り値で
-	// resize するため、その値を渡すと巨大確保になる。ここが実長であることが要。
+	// AVIO_SEEKABLE_NORMAL のときしかサイズ欄を埋め戻さない）。
+	// whisper.cpp が使う miniaudio(dr_wav) は 0xFFFFFFFF を番兵として走査し直す
+	// ため実害はないが、デコーダ側の番兵処理に依存せずサイズが正しい正準WAVを
+	// 自前で組み立てる方が堅牢なため、ここが実長であることが要。
 	tests := []struct {
 		name   string
 		pcmLen int

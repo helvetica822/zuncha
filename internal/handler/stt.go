@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	// sttTimeout は音声認識(ffmpeg変換 + whisper-server)全体の上限。
+	// sttTimeout は音声認識(ffmpeg変換 + whisper-server呼び出し)の上限。
+	// 会話存在チェック(Exists)とmultipart受信(readAudioUpload)はこの期限の
+	// 「外側」(r.Context()のみ)で行われ、予算には含まれない。
 	//
 	// 根拠: STT はユーザーが「変換中」表示のまま待つ同期処理で、体感の許容上限が
 	// そのまま予算になる。録音は無音8秒で打ち切られる(01_screen_design.md 9-2)ため
@@ -20,7 +22,7 @@ const (
 	// 通常は数秒で返る。30秒はその数倍の余裕を見た打ち切り点であり、
 	// 応答生成の予算(responseTimeout = 60秒 = LLM 30 + TTS 20 + 余地)の半分に相当する。
 	// 内訳は whisper-server 側 25秒(whispercpp.defaultRequestTimeout)+
-	// multipart受信・ffmpeg変換・存在チェックの余地 5秒。
+	// ffmpeg変換の余地 5秒。
 	sttTimeout = 30 * time.Second
 
 	// sttAudioField はフロントとの契約(multipart のフィールド名)。

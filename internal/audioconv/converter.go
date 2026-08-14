@@ -66,9 +66,13 @@ func NewConverter(opts ...Option) *Converter {
 // 非シーク可能で RIFF/data のサイズを後から確定できないため
 // (libavformat/riffenc.c の ff_start_tag はサイズに -1 を書き、
 // wavenc.c の wav_write_trailer は AVIO_SEEKABLE_NORMAL のときしか
-// ff_end_tag で埋め戻さない)。サイズが 0xFFFFFFFF のままの WAV を
-// whisper-server へ渡すと、miniaudio の ma_decoder_get_length_in_pcm_frames が
-// 巨大な値を返し、受け側が数GBの確保を試みる。
+// サイズ欄を埋め戻さない。ffmpeg 7.1 実測でも `-f wav pipe:1` の
+// RIFF/data サイズ欄が両方 0xFFFFFFFF になることを確認済み)。
+// このサイズ欄が非準拠のままの WAV は、whisper.cpp が使う miniaudio(dr_wav)
+// では 0xFFFFFFFF を番兵として実長を走査し直す実装のため実害は無いと
+// そら(レビュー)の実測で確認されているが、デコーダ側の番兵処理という
+// 実装依存の挙動に頼らず、サイズが正しい正準 WAV を自前で組み立てる
+// 方が堅牢なため、この方式を採る。
 func (c *Converter) Convert(ctx context.Context, input []byte) ([]byte, error) {
 	if len(input) == 0 {
 		return nil, errors.New("audioconv: 入力音声が空です")

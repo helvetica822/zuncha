@@ -882,7 +882,7 @@ W-10着手前に、whisper-serverの`/inference`エンドポイントのレス�
 
 **確定事項からの逸脱1件(要確認)**: ffmpegの出力を「WAV直出し(`-f wav pipe:1`)」ではなく**生PCM(`-f s16le`)+ Go側でWAVヘッダ付与**にした。根拠は指示書§3.1の「推測で書かない」に従って一次情報を確認した結果:
 - FFmpeg `libavformat/riffenc.c` の `ff_start_tag` はサイズに `-1`(0xFFFFFFFF)を書き、`wavenc.c` の `wav_write_trailer` は `AVIO_SEEKABLE_NORMAL` のときしか `ff_end_tag` で埋め戻さない → **パイプ出力ではRIFF/dataサイズが 0xFFFFFFFF のまま残る**。
-- whisper.cpp 側 (`examples/common-whisper.cpp` の `read_audio_from_decoder`) は `ma_decoder_get_length_in_pcm_frames` の戻り値で `pcmf32.resize()` するため、その WAV を渡すと数GBの確保を試みる。
+- whisper.cpp が使う miniaudio(dr_wav) は 0xFFFFFFFF のサイズ欄を番兵として走査し直す実装のため、実害は無いことがそら(レビュー)の実測で判明(下記レビュー節参照)。ただしデコーダ側のこの番兵処理という実装依存の挙動に頼らず、サイズが正しい正準WAVを自前で組み立てる方が堅牢という判断は変わらない。
 - 引数自体は whisper.cpp 本体の `convert_to_wav`(`ffmpeg -i <in> -y -ar 16000 -ac 1 -c:a pcm_s16le <out>`) に合わせた。D-3 の「16kHz mono WAV へ変換」という結論は変えていない(ヘッダを誰が書くかだけが違う)。
 
 **ffmpeg未インストール環境のSkip**: 実ffmpeg依存テストは**2件がskip**(`TestConverter_実ffmpegでWAVへ変換できる` / `TestConverter_実ffmpegで壊れた入力はエラー`)。skip時は「緑ではなく未実行である」旨を`t.Log`で明示。ただし**偽ffmpegバイナリ(シェルスクリプト)経由の結合検証9件は常時実行**しており、引数列・stdin転送・stdout→WAV包装・stderr伝播・終了コード・空入力ガードは実測済み。実ffmpegとの引数互換だけがW-11(ffmpeg同梱イメージ)まで未実証。
@@ -892,8 +892,25 @@ W-10着手前に、whisper-serverの`/inference`エンドポイントのレス�
 **全体実測**: `go test ./... -count=1` 全緑(524 PASS / 0 FAIL / 2 SKIP、DB: `zuncha_test_zundamon`)、`./scripts/test_race.sh` クリーン、`gofmt -l .` 空、`go vet ./...` EXIT 0、`go build ./...` 成功。
 
 - [x] ずんだもんによるW-10実装(緑。完了判定はPM最終ゲート待ちのため未クローズ)
-- [x] 逸脱1件(ffmpeg出力を生PCM+Go側WAVヘッダ付与に変更)をつむぎが承認: パイプ出力(非シーク可能)ではRIFF/dataチャンクサイズが確定できず0xFFFFFFFFのまま残り、whisper.cpp側のminiaudioデコーダが巨大メモリ確保を試みる問題を回避するため。一次情報(libavformat/riffenc.c, wavenc.cの挙動)に基づく判断で妥当と判断
+- [x] 逸脱1件(ffmpeg出力を生PCM+Go側WAVヘッダ付与に変更)をつむぎが承認: パイプ出力(非シーク可能)ではRIFF/dataチャンクサイズが確定できず0xFFFFFFFFのまま残る。一次情報(libavformat/riffenc.c, wavenc.cの挙動)に基づく判断で妥当と判断(※「miniaudioが巨大メモリ確保を試みる」という当初の理由はそらの実測で誤りと判明、後述のレビュー節参照。デコーダ側の番兵処理に頼らず正準WAVを自前で組み立てる方が堅牢、という結論自体は変わらない)
 - [x] つむぎ独立検証: build/vet/gofmt OK、全緑(2 SKIP=ffmpeg未インストール環境の既知skip)、raceクリーン、`internal/llm`/`internal/anthropic`/`internal/tts`/`internal/voicevox`/`internal/stt`無変更を確認(DB: `zuncha_test_tsumugi`)。WIPコミット(e41c6f6)で固定
 - [ ] そらへW-10レビュー依頼
 
 **ずんだもんからの申し送り(そらへ転送済み)**: ①ミューテーション9件は`go test -overlay`実施のためレビュー対象コミットは無改変 ②未検証領域は「実ffmpegとの引数互換」(skip 2件)のみ。偽ffmpegバイナリ経由の結合検証で引数列・stdin/stdout・stderr・終了コードは実測済みだが、実バイナリが`-f s16le pipe:1`を期待どおり扱うかはW-11(ffmpeg同梱イメージ)で初めて実証される。**W-11の完了条件に実ffmpegでの往復変換テストが緑になることを含めること**(申し送り)。
+
+### そらW-10レビュー(e41c6f6): ⚠要修正(指摘3件) (2026-08-14)
+
+実測: 539 PASS/0 FAIL/2 SKIP(DB: `zuncha_test_sora`)、raceクリーン、保護対象5パッケージ無変更、実whisper-server非接続を確認。D-3a(confidence算出)は確定事項どおり実装済み。
+
+**ffmpeg出力方式の逸脱を、実際にffmpeg 7.1をコンパイル・実行してソースレベルで検証**: パイプ出力WAVのRIFF/dataサイズが0xFFFFFFFFのまま残ることを実測確認(逸脱の前提は事実、承認可)。ただし「miniaudioが巨大メモリ確保を試みる」という当初の理由は誤りと判明: whisper.cppが使うdr_wavは0xFFFFFFFFを番兵として走査し直す実装のため実害はない(同一デコーダ設定でのコンパイル実測で確認)。逸脱自体は「デコーダ側の番兵処理に依存しない正準WAVを自前で作る方が堅牢」という理由で妥当と評価。
+
+`WHISPER_SERVER_BASE_URL`未設定時のlog.Fatal判断、タイムアウト値(30秒/25秒)は妥当と評価。ミューテーション5件中4件検知、**M5(`sttMaxAudioBytes`を10MB→10GBに拡大)のみ未検知**という死角を発見。
+
+**指摘①②【必須・つむぎ直接修正】コメント/文書の事実誤り訂正**: `converter.go`70-71行・`audioconv_test.go`71-72行・`tasks/todo.md`885/895行に複製されていた「miniaudioが巨大メモリ確保を試みる」という誤った理由を、実測結果に基づき訂正。`stt.go`22-23行のタイムアウト内訳コメントも、存在チェック・multipart受信が30秒ctxの外側であるという実態に合わせて訂正。
+
+**指摘③【推奨・ずんだもんへ依頼】`sttMaxAudioBytes`を守るテストの追加**: 10MB+1バイトのmultipartが弾かれることを検証するテストが無い(M5で検知不能を実測)。413化の検討も推奨。
+
+**申し送り(別Wave)**: `01_screen_design.md`§7.3にmultipartフィールド名`audio`の明記、`http.Server`の`ReadTimeout`未設定(既存の性質、W-10の退行ではない)、W-11完了条件に実ffmpeg往復変換テスト+opusデコーダ同梱確認を含めること。
+
+- [x] 指摘①②対応(つむぎ直接修正、build/vet/gofmt/全緑を再確認)
+- [ ] 指摘③をずんだもんへ依頼
