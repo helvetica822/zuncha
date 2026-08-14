@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"zuncha/internal/llm"
 	"zuncha/internal/sse"
@@ -70,10 +71,15 @@ func (s *ResponseStreamer) StreamResponse(
 
 	// TTS は失敗しても致命的にしない（audio_url をスキップして done へ）。
 	// 読み上げは応答全文（チャンクではない。申し送り B1-1）。
-	if url, ttsErr := s.ttsClient.Synthesize(ctx, resp.Text, conversationID, messageID); ttsErr == nil {
-		if err := sink.SendAudioURL(url); err != nil {
-			return s.fail(sink, fmt.Errorf("send audio url: %w", err))
-		}
+	url, ttsErr := s.ttsClient.Synthesize(ctx, resp.Text, conversationID, messageID)
+	if ttsErr != nil {
+		// 非致命ゆえに利用者からは「文字は出るが一生無音」としか見えない（そら指摘③）。
+		// VOICEVOX の停止や BASE_URL 設定ミスに運用側が気づける唯一の手がかりなので必ず記録する。
+		// 発話内容（resp.Text）は載せない（NF-SEC）。
+		log.Printf("TTS合成に失敗（audio_urlをスキップ）: conversation_id=%s message_id=%s: %v",
+			conversationID, messageID, ttsErr)
+	} else if err := sink.SendAudioURL(url); err != nil {
+		return s.fail(sink, fmt.Errorf("send audio url: %w", err))
 	}
 
 	if err := sink.SendDone(); err != nil {

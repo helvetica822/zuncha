@@ -816,4 +816,17 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 
 - [x] `zuncha_test_metan`をDROP DATABASE→再作成(新スキーマ反映)
 - [x] `create_test_db.sh`に注意書きを追記(DDL変更時は各自DROP DATABASEしてから再実行することを明記)
-- [ ] 申し送り: migration管理ツールの導入は今回は見送り(W-09の範囲外、規模に対して過剰)。DDL変更のたびに同じ取りこぼしが起きうる構造なので、次にDDLを変更するWaveでは「全員のテストDBを再作成する」手順を指示書に明記すること
+- [x] 申し送り: migration管理ツールの導入は今回は見送り(W-09の範囲外、規模に対して過剰)。DDL変更のたびに同じ取りこぼしが起きうる構造なので、次にDDLを変更するWaveでは「全員のテストDBを再作成する」手順を指示書に明記すること
+
+### ずんだもんによる指摘②③対応・つむぎ独立検証完了 (2026-08-14)
+
+**指摘②**: `cmd/api/main_test.go`に`TestLoadConfig`を追加(3ケース: 未設定時デフォルト・空文字列時デフォルト・設定時は優先)。`t.Setenv`+`os.Unsetenv`で「真に未設定」の状態を作りテスト。期待値はデフォルト定数だけでなく`"http://localhost:50021"`という具体値でも固定(定数側が書き換わった際に気づけるように)。
+
+**指摘③**: `internal/service/response_streamer.go`でTTS失敗時に`log.Printf`で`conversation_id`/`message_id`/エラー内容を記録するよう変更。発話内容(`resp.Text`)は含めない。`tests/unit/response_streamer_test.go`に`TestResponseStreamer_TTS失敗はログに記録される`を追加し、①失敗理由と会話IDがログに残る②発話内容はログに出さない③TTS成功時は何もログに出さない、の3点を検証。
+
+**つむぎ独立検証**: build/vet/gofmt OK、`go test ./tests/...`全緑、`go test ./cmd/...`で`TestLoadConfig`3ケースPASS、`test_race.sh`クリーン(DB: `zuncha_test_tsumugi`)。ログに発話内容が含まれないこともコード・テスト両面で確認。
+
+**運用上の注意(記録)**: 今回、ずんだもんの並行作業中に`git add -A`でコミットしてしまい、`cmd/api/main_test.go`と`response_streamer_test.go`の変更が意図せず前のコミット(`a07f02a`)に混入した。実害はなかった(内容は正しく完成していた)が、以降はコミット前に`git status`で意図しないファイルが混ざっていないか確認すること。
+
+- [x] 指摘②③対応・独立検証完了
+- [ ] WIPコミットで再固定→そらへ再レビュー依頼
