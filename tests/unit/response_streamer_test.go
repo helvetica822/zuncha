@@ -535,12 +535,15 @@ func TestResponseStreamer_TTS失敗はログに記録される(t *testing.T) {
 		return buf
 	}
 
-	t.Run("失敗理由と会話IDがログに残る", func(t *testing.T) {
+	t.Run("失敗理由と会話ID・メッセージIDがログに残る", func(t *testing.T) {
 		logged := runFlow(t, errors.New("voicevox unavailable")).String()
 
 		require.NotEmpty(t, logged, "TTS失敗が無記録のままでは運用時に原因へ辿り着けない")
 		assert.Contains(t, logged, "voicevox unavailable", "失敗理由（原因エラー）が残ること")
 		assert.Contains(t, logged, streamerConvID, "どの会話が無音になったか特定できること")
+		// そらのミューテーション実測(M8)で、message_id が無くても検知できないことが
+		// 判明した抜け穴。message_id は audio_files の行を辿る鍵なので固定する。
+		assert.Contains(t, logged, streamerMessageID, "どのメッセージが無音になったか特定できること")
 	})
 
 	t.Run("発話内容はログに出さない", func(t *testing.T) {
