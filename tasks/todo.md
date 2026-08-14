@@ -830,3 +830,19 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 
 - [x] 指摘②③対応・独立検証完了
 - [ ] WIPコミットで再固定→そらへ再レビュー依頼
+
+#### ずんだもんの実測記録(RED確認・ミューテーション)
+
+**RED確認**: 指摘③のテストは実装前に実行し`Should NOT be empty`で赤になることを確認済み(`失敗理由と会話IDがログに残る`のみFAIL、他2サブテストは実装前でも緑=正しく失敗経路だけを突いている)。指摘②は既存挙動へのテスト追加のため素の実行では緑スタートになる。そこで`go test -overlay`(スキル`mutation-test-overlay`)で作業ツリー無改変のままガードを外し、検知力を実測した。
+
+| # | ミューテーション | 結果 |
+|---|---|---|
+| M1 | `loadConfig`の`if c.voicevoxBaseURL == ""`フォールバックを削除 | 🔴 検知 (`actual: ""`) |
+| M2 | `defaultVoicevoxBaseURL`を`:50022`に改竄 | 🔴 検知 (ポート差分を検出) |
+| M3 | TTS失敗時の`log.Printf`を削除 | 🔴 検知 (ログ空) |
+| M4 | ログに`text=%s`で発話内容を含める | 🔴 検知 (NF-SEC違反を検出) |
+| M5 | 成否に関わらずログ出力(`if ttsErr != nil`の外へ移動) | 🔴 検知 (成功時ログ検出) |
+
+5件すべて赤。検証後、一時ファイルは削除済み・`git status`に一時ファイルの残骸がないことを確認済み(作業ツリーは1バイトも改変していない)。
+
+**全体実測**: `go test ./... -count=1 -v` → 471 PASS / 0 FAIL / 0 SKIP(DB: `zuncha_test_zundamon`をDROP→`create_test_db.sh`で新スキーマ再作成)、`test_race.sh`クリーン、`gofmt -l .`空、`go vet ./...` EXIT 0、`go build ./...`成功、`npm test` 95 PASS。ログにAPIキー・発話内容が含まれないことをM4で実測。
