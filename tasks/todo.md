@@ -969,3 +969,33 @@ W-11の完了条件「実際に1往復の音声会話が成立する」を精査
 
 - [x] Plan Mode完了・実装計画承認済み
 - [ ] W-12(sseStream.ts)着手
+
+### W-12(sseStream.ts / 生SSEイベントパーサ) 実装完了・レビュー待ち (2026-08-14 / ずんだもん)
+
+**成果物**: `src/lib/sseStream.ts`(新規、純粋関数のみ・ブラウザAPI非依存) + `tests/unit/frontend/sse_stream.test.ts`(新規40件)。
+既存`src/lib/sseEventRouter.ts`・`conversation_view.test.ts`・`error_routing.test.ts`・`internal/`配下・`ConversationView.svelte`はいずれも無変更(`git status`は新規2ファイルのみ)。
+
+**実測**: `npx vitest run` 135 PASS/0 FAIL(既存95件は無改変のまま全緑 + 新規40件)、`npx tsc --noEmit` EXIT 0。
+
+**RED確認**: (1)実装ファイル未作成の状態でimport解決エラー→テスト0件実行。(2)`parseServerEvent`が常に`null`を返すスタブに差し替えて実行→**20 failed/20 passed**(値を返すべき正常系20件が赤。null期待の異常系20件はスタブでも通るため、これらはミューテーション実測側で担保)。
+
+**設計判断: `emotion`の`label`欠落時は`null`(困惑フォールバックにしない)**
+`internal/llm.ParseLLMResponse`のエラー分類に揃えた2段階の区別を採用した。
+- `label`キー欠落/文字列以外 → `null`(パース失敗)。Goでは`ErrSchema`/`ErrValue`として**エラー**になる系統であり、サーバーがイベント契約を満たしていない=データが壊れている状態。感情を推測して表示するより破棄する方が安全。
+- `label`は文字列だが7種外(空文字列含む) → **困惑**にフォールバック。Goでは`validation.ValidateEmotion`失敗→`validation.FallbackEmotion`に倒す系統であり、LLMが未知ラベルを返すのは想定内の揺らぎ。
+この線引きにより「バックエンドのバグ(契約違反)」と「LLM出力の揺らぎ」を別扱いでき、W-14の呼び出し側に判断を持ち込まずに済む。
+
+**その他の判断**:
+- `error`の`message`は欠落・空・型不正でも空文字列にフォールバックし`null`にしない(errorイベント自体は届いているため)。`DEFAULT_ERROR_MESSAGE`への差し替えは呼び出し側(既存`sseEventRouter`/W-14)の責務とし、文言規則を重複させない。
+- `error`の`request_id`空文字列は正当な値として通す(接続レベル障害)。一方`request_id`の欠落・null・非文字列は全イベントで`null`。
+- `Emotion`型は`sseEventRouter`からimportし再定義しない。実行時判定用の`EMOTIONS`は`readonly Emotion[]`と宣言し、型と値の乖離をコンパイル時に検出させる。
+
+**ミューテーション実測**(一時的にファイルを書き換え→`npx vitest run`→`sha256sum -c`で復元確認。作業ツリーは最終的に無改変): **4/4検知 + 等価ミュータント2件を特定**
+- M1 困惑フォールバック(7種判定)を削除 → TC-W12-19/20が赤(**指示書の必須実測項目**)
+- M2 `label`欠落時の`null`返却を削除(欠落も困惑に倒す) → TC-W12-17/18が赤 → 2段階の区別が実際に効いていることを実証
+- M3 `error`の`message`空文字フォールバックを削除 → TC-W12-25/27が赤
+- M4 `audioUrl`の`url`を取り違え → TC-W12-03が赤
+- M5(生存・等価) `Array.isArray`ガード削除 / M5'(生存・等価) JSONオブジェクト型ガードごと削除 → **いずれも40件全緑のまま**。理由: 配列・数値・文字列は`request_id`キーを持ち得ず、JSON`null`は`record === null`判定に捕まるため、必須フィールド判定が型ガードを完全に吸収している。公開API経由では検知不能な**等価ミュータント**であり、テストの不足ではない。一度は削除を試みたが、「dataはJSONオブジェクトである」という契約の明示と、プリミティブへのプロパティアクセスがundefinedを返すというJSの挙動への暗黙依存を避けるため**ガードは残す判断**とし、その旨をコード内コメントに明記した。
+- M6 `requiredString`の型判定を`String()`変換に緩和 → TC-W12-14/16/18/22の4件が赤
+
+- [ ] W-12(sseStream.ts) 実装完了・**そらレビュー待ち**(completed化はつむぎの最終ゲート)
