@@ -40,10 +40,18 @@ fi
 
 # migration を適用する。テーブルが既にある場合は CREATE TABLE が落ちるため、
 # 適用済みかを1テーブルの存在で判定する（migration管理ツールは未導入）。
+#
+# 【注意】この判定は「conversationsテーブルが存在するか」だけを見ており、
+# DDL変更（カラム追加・FK制約の変更など）を検知できない。0001_initial_schema.up.sql
+# を変更した場合、既存DBに対してこのスクリプトを再実行しても何も起きず、
+# 既存DBは古いスキーマのまま取り残される（2026-08-10、そらの実測で
+# zuncha_test_metanが旧FKスキーマのまま残っていたことが判明・要修正の原因になった）。
+# DDLを変更したら、各自 `DROP DATABASE zuncha_test_<owner>` してから
+# このスクリプトを再実行すること。
 has_tables=$(docker exec -i "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$DB_NAME" -tAc \
   "SELECT 1 FROM information_schema.tables WHERE table_name = 'conversations'")
 if [[ "$has_tables" == "1" ]]; then
-  echo "スキーマは既に適用済みです。"
+  echo "スキーマは既に適用済みです（DDL変更を反映済みか不安な場合は、DROP DATABASEしてから再実行してください）。"
 else
   docker exec -i "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$DB_NAME" \
     < "$REPO_ROOT/migrations/0001_initial_schema.up.sql"

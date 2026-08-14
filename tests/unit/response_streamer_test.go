@@ -4,6 +4,8 @@ package unit
 import (
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -480,6 +482,79 @@ func TestResponseStreamer_TTSへ会話IDとメッセージIDを渡す(t *testing
 	// 読み上げ対象はチャンクではなく応答全文（申し送り B1-1 の固定）。
 	ttsClient.AssertCalled(t, "Synthesize", mock.Anything, "こんにちはなのだ",
 		streamerConvID, streamerMessageID)
+}
+
+func TestResponseStreamer_TTS失敗はログに記録される(t *testing.T) {
+	// そら指摘③: TTS 失敗は非致命（audio_url をスキップして done）だが、ttsErr が
+	// 握りつぶされていたため VOICEVOX の停止や URL 設定ミスが完全に無症状になっていた
+	// （「文字は出るが一生無音」）。運用時に原因へ辿り着ける記録を残すことを固定する。
+	//
+	// 発話内容（resp.Text）はログに載せない（NF-SEC。既存の anthropic クライアントと同方針）。
+	const secretText = "誰にも知られたくない秘密の発話内容なのだ"
+
+	captureLog := func(t *testing.T) *strings.Builder {
+		t.Helper()
+		var buf strings.Builder
+		origOut := log.Writer()
+		origFlags := log.Flags()
+		log.SetOutput(&buf)
+		log.SetFlags(0)
+		t.Cleanup(func() {
+			log.SetOutput(origOut)
+			log.SetFlags(origFlags)
+		})
+		return &buf
+	}
+
+	// TTS の成否だけを変えた同一フローを流す。
+	runFlow := func(t *testing.T, ttsErr error) *strings.Builder {
+		t.Helper()
+		buf := captureLog(t)
+
+		llmClient := new(mockLLMClient)
+		parser := new(mockResponseParser)
+		ttsClient := new(mockTTSClient)
+		chunker := new(mockTextChunker)
+		sink := new(mockEventSink)
+
+		llmClient.On("GenerateResponse", mock.Anything, mock.Anything).Return([]byte("raw"), nil)
+		parser.On("Parse", mock.Anything).Return(&llm.LLMResponse{Text: secretText, Emotion: "喜び"}, nil)
+		chunker.On("Chunk", secretText).Return([]string{secretText})
+		if ttsErr != nil {
+			ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("", ttsErr)
+		} else {
+			ttsClient.On("Synthesize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("/audio/x", nil)
+			sink.On("SendAudioURL", mock.Anything).Return(nil)
+		}
+		sink.On("SendEmotion", mock.Anything).Return(nil)
+		sink.On("SendTextChunk", mock.Anything).Return(nil)
+		sink.On("SendDone").Return(nil)
+
+		streamer := service.NewResponseStreamer(llmClient, parser, ttsClient, chunker)
+		require.NoError(t, streamer.StreamResponse(context.Background(), sink, "prompt", streamerConvID, streamerMessageID))
+		return buf
+	}
+
+	t.Run("失敗理由と会話IDがログに残る", func(t *testing.T) {
+		logged := runFlow(t, errors.New("voicevox unavailable")).String()
+
+		require.NotEmpty(t, logged, "TTS失敗が無記録のままでは運用時に原因へ辿り着けない")
+		assert.Contains(t, logged, "voicevox unavailable", "失敗理由（原因エラー）が残ること")
+		assert.Contains(t, logged, streamerConvID, "どの会話が無音になったか特定できること")
+	})
+
+	t.Run("発話内容はログに出さない", func(t *testing.T) {
+		logged := runFlow(t, errors.New("voicevox unavailable")).String()
+
+		assert.NotContains(t, logged, secretText, "発話内容がログに出てはならない（NF-SEC）")
+		assert.NotContains(t, logged, "秘密の発話内容")
+	})
+
+	t.Run("TTS成功時は何もログに出さない", func(t *testing.T) {
+		logged := runFlow(t, nil).String()
+
+		assert.Empty(t, logged, "正常時のログはノイズになるため出さない")
+	})
 }
 
 func TestResponseStreamer_errorイベントに内部エラー文字列を出さない(t *testing.T) {

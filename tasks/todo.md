@@ -811,3 +811,9 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 - [x] 指摘①対応(つむぎ直接修正)
 - [ ] 指摘②③をずんだもんへ差し戻し
 - [x] 共有DB`zuncha_test`の旧スキーマ問題への対応: つむぎが`DROP DATABASE zuncha_test`で削除。次回`ZUNCHA_TEST_DB_OWNER`未設定で使われた際は`create_test_db.sh`経由で新スキーマで再作成される
+
+**そらが追加発見**: `zuncha_test_metan`も旧スキーマ(`message_id`のFK付き)のまま残存していた。`create_test_db.sh`は「`conversations`テーブルが存在するか」だけでスキーマ適用済みと判定するため、**DDL変更時に既存DBへ再実行しても何も反映されない**構造的な弱点があると判明。
+
+- [x] `zuncha_test_metan`をDROP DATABASE→再作成(新スキーマ反映)
+- [x] `create_test_db.sh`に注意書きを追記(DDL変更時は各自DROP DATABASEしてから再実行することを明記)
+- [ ] 申し送り: migration管理ツールの導入は今回は見送り(W-09の範囲外、規模に対して過剰)。DDL変更のたびに同じ取りこぼしが起きうる構造なので、次にDDLを変更するWaveでは「全員のテストDBを再作成する」手順を指示書に明記すること
