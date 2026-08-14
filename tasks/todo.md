@@ -892,4 +892,8 @@ W-10着手前に、whisper-serverの`/inference`エンドポイントのレス�
 **全体実測**: `go test ./... -count=1` 全緑(524 PASS / 0 FAIL / 2 SKIP、DB: `zuncha_test_zundamon`)、`./scripts/test_race.sh` クリーン、`gofmt -l .` 空、`go vet ./...` EXIT 0、`go build ./...` 成功。
 
 - [x] ずんだもんによるW-10実装(緑。完了判定はPM最終ゲート待ちのため未クローズ)
-- [ ] そらへW-10レビュー依頼(逸脱1件の可否判断を含む)
+- [x] 逸脱1件(ffmpeg出力を生PCM+Go側WAVヘッダ付与に変更)をつむぎが承認: パイプ出力(非シーク可能)ではRIFF/dataチャンクサイズが確定できず0xFFFFFFFFのまま残り、whisper.cpp側のminiaudioデコーダが巨大メモリ確保を試みる問題を回避するため。一次情報(libavformat/riffenc.c, wavenc.cの挙動)に基づく判断で妥当と判断
+- [x] つむぎ独立検証: build/vet/gofmt OK、全緑(2 SKIP=ffmpeg未インストール環境の既知skip)、raceクリーン、`internal/llm`/`internal/anthropic`/`internal/tts`/`internal/voicevox`/`internal/stt`無変更を確認(DB: `zuncha_test_tsumugi`)。WIPコミット(e41c6f6)で固定
+- [ ] そらへW-10レビュー依頼
+
+**ずんだもんからの申し送り(そらへ転送済み)**: ①ミューテーション9件は`go test -overlay`実施のためレビュー対象コミットは無改変 ②未検証領域は「実ffmpegとの引数互換」(skip 2件)のみ。偽ffmpegバイナリ経由の結合検証で引数列・stdin/stdout・stderr・終了コードは実測済みだが、実バイナリが`-f s16le pipe:1`を期待どおり扱うかはW-11(ffmpeg同梱イメージ)で初めて実証される。**W-11の完了条件に実ffmpegでの往復変換テストが緑になることを含めること**(申し送り)。
