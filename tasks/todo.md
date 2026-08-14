@@ -846,3 +846,16 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 5件すべて赤。検証後、一時ファイルは削除済み・`git status`に一時ファイルの残骸がないことを確認済み(作業ツリーは1バイトも改変していない)。
 
 **全体実測**: `go test ./... -count=1 -v` → 471 PASS / 0 FAIL / 0 SKIP(DB: `zuncha_test_zundamon`をDROP→`create_test_db.sh`で新スキーマ再作成)、`test_race.sh`クリーン、`gofmt -l .`空、`go vet ./...` EXIT 0、`go build ./...`成功、`npm test` 95 PASS。ログにAPIキー・発話内容が含まれないことをM4で実測。
+
+### そらW-09指摘②③再レビュー: ✅承認 — W-09完了 (2026-08-14)
+
+実測: 459 PASS/0 FAIL/0 SKIP(DB: `zuncha_test_sora`、実DB照会で`message_id`のFK残存なしを確認)、`go test ./cmd/...`で`TestLoadConfig`3ケースPASS、raceクリーン。`internal/llm`・`internal/anthropic`は0ファイル変更を確認。指摘②(デフォルト補完の二重固定)・指摘③(ログ追加が既存の非致命セマンティクスを破壊していないこと)いずれも妥当と評価。
+
+ミューテーション実測8件中7件検知、**M8(ログ行から`message_id`を削除)のみ検知不能**という限界を発見・申し送り。
+
+**判定: ✅承認。** ただし「検知不能な限界を明記する」という自身の教訓(2026-07-29)に従い、M8を差し戻し事由にはせず記録のみとした。
+
+**M8対応(つむぎ直接修正)**: `tests/unit/response_streamer_test.go`の既存テストに`assert.Contains(t, logged, streamerMessageID, ...)`を1行追加し、message_idの検証漏れを解消。全体テスト・build/vet/gofmt再確認済み。
+
+- [x] W-09(VOICEVOX TTS実装) 完了(つむぎ最終ゲート: そら承認済み、M8の1行対応込み)
+- [ ] 次タスク判断: W-10/W-11(Docker Compose・実疎通確認)着手 or 他の優先度確認
