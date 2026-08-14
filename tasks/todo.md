@@ -945,4 +945,27 @@ W-10着手前に、whisper-serverの`/inference`エンドポイントのレス�
 **判定: ✅承認。** W-11への申し送り(§7.3のmultipartフィールド名+413明記、`ReadTimeout`未設定は既存性質、実ffmpeg往復変換テスト+opusデコーダ同梱確認)は既に記録済みの内容と一致。
 
 - [x] W-10(Whisper.cpp STT実装) 完了(つむぎ最終ゲート: そら承認済み)
-- [ ] 次タスク判断: W-11(Docker Compose一式)着手 or 他の優先度確認
+- [x] 次タスク判断: W-11(Docker Compose一式)着手を決定
+
+### W-11着手前レビューでW-12〜W-17(フロント実配線)の未着手を発見・Plan Mode実施 (2026-08-14)
+
+W-11の完了条件「実際に1往復の音声会話が成立する」を精査したところ、`ConversationView.svelte`は「配線待ちの受け皿」で、SSE受信・送信API・録音・音声再生いずれも実ネットワーク処理を持たず、既存テストは全て公開関数を直接呼ぶ疑似トリガーで検証されている状態と判明。W-12(SSEパーサ)〜W-17(音声再生)が未着手のまま残っていた。
+
+**ユーザー承認によりW-15/W-16(フロント配線)着手 → 依存関係調査でW-12〜W-17全体が必要と判明 → Plan Modeで詳細計画を策定・承認済み。** 計画全文は`/home/masashiohashi/.claude/plans/shiny-napping-treehouse.md`。
+
+**実装順序(確定)**: W-12(S)→W-13(M)→W-14(M)→W-15(M)→W-17(S)→W-16(L)。単一実装者が`ConversationView.svelte`を順に触るため直列。W-16を最後に置く理由: 規模最大・UI変更(送信ボタン拡張)を伴う・決-2ガードの検証は他配線が固まった後の方が正確。
+
+**モック戦略**: msw等の新規npm依存は追加しない。バックエンドの`internal/anthropic.WithBaseURL`と同型のファクトリ注入パターン(Optionパターンのフロント版)を採用。`vitest-setup.ts`には安全網(no-op EventSource等)のみ追加し既存95件のクラッシュを防ぐ。
+
+**重要な設計修正(画面設計を確認して発見)**: 当初「マイクボタンを新設」する案だったが、`01_screen_design.md`確認の結果、**マイクボタンは存在せず送信ボタンが状態に応じてラベル・動作を切り替える設計**(音声モード待機中「話す」→録音開始、録音後「送信」)と判明。W-16では既存`SendButton.svelte`にlabel/onClickのprops拡張を行う方針に修正。
+
+**未確定仕様3点はシンプル解で確定(ユーザー承認)**: マイク権限拒否時は静かにeditable復帰(トーストなし)、STT非2xx応答はunrecognizedと同一視、音声再生失敗時はログのみ(通知なし)。
+
+**確定済みAPI契約(実装コードから検証済み)**:
+- SSEイベント5種: `emotion`(label)/`text`(chunk、`text_chunk`ではない)/`audio_url`(url)/`done`/`error`(message)、全て`request_id`を持つ
+- `POST /conversations/{id}/messages`: `{request_id,text}` → `202 {request_id}`
+- `POST /conversations/{id}/stt`: multipart(フィールド名`audio`) → 成功`200{text,confidence}`/失敗`200{failed:true}`
+- 相関: `currentRequestId`と一致しないイベントは破棄(errorのみ不一致でもトースト表示)、一致するdoneのみ`completeSubmission()`
+
+- [x] Plan Mode完了・実装計画承認済み
+- [ ] W-12(sseStream.ts)着手
