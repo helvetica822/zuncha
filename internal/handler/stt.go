@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -99,13 +100,20 @@ func (h *Handler) HandleSTT(w http.ResponseWriter, r *http.Request) {
 }
 
 // readAudioUpload は multipart/form-data から音声バイト列を取り出す。
-// 取り出せなかった場合は 400 を返して ok=false にする。
+// 取り出せなかった場合は 400（上限超過のみ 413）を返して ok=false にする。
 func readAudioUpload(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, sttMaxAudioBytes)
 
 	// maxMemory を上限と同じにして、一時ファイルへ溢れさせない
 	// (どのみち全量をメモリへ読むうえ、ディスクI/Oを避ける方針のため)。
 	if err := r.ParseMultipartForm(sttMaxAudioBytes); err != nil {
+		// 上限超過は「形式が不正」とは別の事象なので 413 で区別する。
+		// クライアントは録音が長すぎたと判断できる（400 だと実装バグと区別できない）。
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			respondError(w, http.StatusRequestEntityTooLarge, "音声データが大きすぎます")
+			return nil, false
+		}
 		respondError(w, http.StatusBadRequest, "音声データの形式が不正です")
 		return nil, false
 	}

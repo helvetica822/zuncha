@@ -25,6 +25,19 @@ import (
 // sttAudioField はフロントとの契約（multipart のフィールド名）。
 const sttAudioField = "audio"
 
+// sttMaxAudioBytes はアップロード音声の上限（internal/handler/stt.go と同値）。
+//
+// あえて実装側の定数を参照せず、契約値をテスト側にも書き写している。
+// 定数を共有すると上限をいくら書き換えてもテストが追従してしまい、
+// 「10MB を守っているか」を検証できなくなる（実装側を変えたらここも赤くなるのが正しい）。
+const sttMaxAudioBytes = 10 << 20
+
+// sttMultipartOverhead は multipart のヘッダ・境界行が占めるバイト数の見積り上限。
+//
+// MaxBytesReader が数えるのはボディ全体なので、「上限ちょうど」を送りたいときは
+// この分を音声本体から引く必要がある（実測では 250 バイト前後）。
+const sttMultipartOverhead = 1024
+
 // sttResponse は POST .../stt のレスポンス本文。
 // failed は認識失敗時のみ true になる（成功時は省略される）。
 type sttResponse struct {
@@ -230,6 +243,40 @@ func TestHandlerSTT_音声が空なら400(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Equal(t, 0, f.sttC.callCount(), "空の音声を変換・認識へ流している")
+}
+
+func TestHandlerSTT_上限を超える音声は413で拒否し変換も認識も行わない(t *testing.T) {
+	// 1リクエストでメモリを食い潰されないための上限（internal/handler/stt.go）。
+	// 「形式が不正（400）」ではなく 413 で返し、クライアントが
+	// 「録音が長すぎた」と判別できるようにする。
+	f := newHandlerFixture(t)
+	convID := f.seedConversation(t)
+
+	// ボディ全体が上限を必ず超えるサイズ。bytes.Repeat で確保は1回だけ。
+	audio := bytes.Repeat([]byte("a"), sttMaxAudioBytes+1)
+
+	resp := f.postSTT(t, convID, sttAudioField, audio)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	got := decodeSTT(t, resp)
+	assert.NotEmpty(t, got.Error, "エラーメッセージが返っていない")
+	assert.Empty(t, f.sttConv.recordedInputs(), "上限超過の音声をffmpeg変換へ流している")
+	assert.Equal(t, 0, f.sttC.callCount(), "上限超過の音声を認識へ流している")
+}
+
+func TestHandlerSTT_上限ぎりぎりの音声は受け付ける(t *testing.T) {
+	// 上限が不当に小さくされた場合に気づけるよう、境界の内側も固定する。
+	f := newHandlerFixture(t)
+	convID := f.seedConversation(t)
+
+	audio := bytes.Repeat([]byte("a"), sttMaxAudioBytes-sttMultipartOverhead)
+
+	resp := f.postSTT(t, convID, sttAudioField, audio)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	inputs := f.sttConv.recordedInputs()
+	require.Len(t, inputs, 1)
+	assert.Len(t, inputs[0], len(audio), "上限内の音声が途中で切られている")
 }
 
 func TestHandlerSTT_サービス層のエラーは500(t *testing.T) {

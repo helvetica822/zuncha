@@ -913,4 +913,25 @@ W-10着手前に、whisper-serverの`/inference`エンドポイントのレス�
 **申し送り(別Wave)**: `01_screen_design.md`§7.3にmultipartフィールド名`audio`の明記、`http.Server`の`ReadTimeout`未設定(既存の性質、W-10の退行ではない)、W-11完了条件に実ffmpeg往復変換テスト+opusデコーダ同梱確認を含めること。
 
 - [x] 指摘①②対応(つむぎ直接修正、build/vet/gofmt/全緑を再確認)
-- [ ] 指摘③をずんだもんへ依頼
+- [x] 指摘③をずんだもんへ依頼
+
+#### 指摘③対応(ずんだもん): `sttMaxAudioBytes`の境界テスト追加 + 413化 (2026-08-14)
+
+**変更(2ファイル)**:
+- `internal/handler/stt.go`: `readAudioUpload`で`ParseMultipartForm`のエラーを`errors.As(err, &*http.MaxBytesError)`で判別し、上限超過のみ **413 Payload Too Large** +`{"error":"音声データが大きすぎます"}`へ変更(それ以外は従来どおり400「音声データの形式が不正です」)。レスポンス形式は既存どおり`respondError`を使用し、他のエラーパスとの一貫性を維持。
+- `tests/integration/handler_stt_test.go`: 境界テスト2本を追加。
+  - `TestHandlerSTT_上限を超える音声は413で拒否し変換も認識も行わない`: `bytes.Repeat`で`sttMaxAudioBytes+1`バイトを1回だけ確保して送信 → 413、かつffmpeg変換(`recordedInputs()`空)・whisper呼び出し(`callCount()==0`)のどちらにも到達しないことを検証。
+  - `TestHandlerSTT_上限ぎりぎりの音声は受け付ける`: 上限が不当に縮小された場合を検知するため境界の内側(`sttMaxAudioBytes - 1024`。1024はmultipartヘッダ/境界行の見積り。`MaxBytesReader`が数えるのはボディ全体で実測オーバーヘッドは250バイト前後)も200で固定。
+
+**テスト側に契約値を書き写した理由**: `sttMaxAudioBytes`を実装から共有(export)すると、上限をいくら書き換えてもテストが追従して緑のままになりM5の死角が再発する。あえて二重に持ち、実装側の定数を変えたらテストが赤くなる形にした(テスト側にその旨コメント済み)。
+
+**413化の判断(採用)**: ①`errors.As`で`*http.MaxBytesError`が確実に取れることをGo 1.24の`httptest`で実測確認済み(`ParseMultipartForm`が`*http.MaxBytesError`をそのまま返す) ②上限超過は「形式が不正(=クライアントのバグ)」とは別事象で、413ならフロントは「録音が長すぎた」と判別して回復動線を出せる ③フロントは現時点で`/stt`を未実装(`src`配下に呼び出しなし)、`01_screen_design.md`§7.3も成功時レスポンスしか規定していないため、既存契約を壊さない。**申し送り**: §7.3の追記(multipartフィールド名`audio`)を行う別Waveで、エラー時のステータス(400/404/413/500)も併記すること。
+
+**実測**:
+- RED確認: 413テストが`expected: 413 / actual: 400`で赤 → 実装後に緑(上限自体は元から効いていたが、ステータスが未区別だった)。
+- `go test ./... -count=1` 全緑(DB: `zuncha_test_zundamon`)、`./scripts/test_race.sh` 緑(integration/unitともok)、`gofmt -l .`空、`go vet ./...` EXIT 0、`go build ./...`成功。
+- ミューテーション実測(`go test -overlay`、作業ツリー無改変。一時ファイル削除済み・`git status`が対象2ファイルのみであることを確認): **4/4検知**
+  - M1 `sttMaxAudioBytes`を10MB→10GB(そらのM5と同一): 413テストが赤(200) → **死角の解消を実証**
+  - M2 10MB→1MB(縮小方向): ぎりぎりテストが赤(413)
+  - M3 `http.MaxBytesReader`の行を削除: 413テストが赤(200)
+  - M4 413分岐を削除(従来の400のみ): 413テストが赤(400)
