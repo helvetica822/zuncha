@@ -858,4 +858,16 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 **M8対応(つむぎ直接修正)**: `tests/unit/response_streamer_test.go`の既存テストに`assert.Contains(t, logged, streamerMessageID, ...)`を1行追加し、message_idの検証漏れを解消。全体テスト・build/vet/gofmt再確認済み。
 
 - [x] W-09(VOICEVOX TTS実装) 完了(つむぎ最終ゲート: そら承認済み、M8の1行対応込み)。そらがM8ミューテーションを再実行し対応後は正しく赤化することまで実測確認済み(全体退行なし、`8eabd3f`のまま無改変)
-- [ ] 次タスク判断: W-10/W-11(Docker Compose・実疎通確認)着手 or 他の優先度確認
+- [x] 次タスク判断: W-10(Whisper.cpp STT実装)着手を決定(W-11はW-10依存のため先にW-10から)
+
+### W-10着手前調査: whisper-server API仕様の確認・confidence算出方針決定 (2026-08-14)
+
+W-10着手前に、whisper-serverの`/inference`エンドポイントのレスポンス形式を公式リポジトリ(ggml-org/whisper.cpp)で調査。`response_format=json`だと`{"text": "..."}`のみで信頼度相当の値が無いことが判明。`verbose_json`にすると`segments[].no_speech_prob`(無音確率)が得られる。
+
+**ユーザー承認**: `confidence = 1 - max(segments[].no_speech_prob)`(複数segmentsの場合は最も無音確率が高い区間を全体のconfidenceとして採用、保守的に判定)。segments空なら`confidence=0`。`docs/04_implementation/04_realtime_wiring_design.md` D-3aとして記録。
+
+`tasks/instructions_zundamon_wave_w10.md`作成: whisper-serverクライアント・ffmpeg変換(`internal/audioconv`、interface抽象化)・オーケストレーション層・`POST /conversations/{id}/stt`ハンドラの4点セット。**この開発環境にffmpegが未インストール**のため、ffmpeg依存部分はinterfaceで抽象化し、実際のffmpeg呼び出しテストは`exec.LookPath`で存在確認しskip可能な設計にする方針を明記。
+
+- [x] whisper-server API仕様調査・confidence算出方針決定・指示書作成
+- [ ] ずんだもんによるW-10実装
+- [ ] そらへW-10レビュー依頼

@@ -122,6 +122,12 @@ IsRecognitionFailed() で判定 → 失敗なら 200 {failed:true} を返し、�
 - **Whisper.cpp の連携方式は `whisper-server` (HTTP) を別コンテナ**とする。cgo バインディングはビルドの複雑さ・クロスコンパイル問題を持ち込み、C-04 (Docker Compose前提) と整合しない。プロセス都度起動 (CLI exec) はモデルロードが毎回走り NF-PERF-01 に反する。
 - 音声形式変換は **API コンテナに ffmpeg を同梱**して行う。フロントで 16kHz PCM WAV を手書きエンコードする案より、標準API (`MediaRecorder`) のままにできてフロントが薄い。
 
+### D-3a. confidence の算出方法 — **2026-08-14 決定(W-10着手前に確認)**
+
+whisper-server の `/inference` は `response_format=json` だと `{"text": "..."}` のみで信頼度相当の値を返さない(公式リポジトリの実装を確認済み)。`response_format=verbose_json` にすると `segments[].no_speech_prob`(その区間が無音である確率)が得られる。
+
+**決定**: `response_format=verbose_json` を使い、`confidence = 1 - max(segments[].no_speech_prob)`(複数segmentsがある場合は最も無音確率が高い＝最も疑わしい区間を全体のconfidenceとして採用し、誤認識を見逃さない方向に倒す)。segments が空(無音のみ等)の場合は `confidence = 0`(認識失敗として扱う)。
+
 ### D-4. TTS: VOICEVOX ラッパー (F-TTS-02/03) — **2026-08-10 訂正(W-09着手前に発覚)**
 
 - `internal/voicevox` に HTTP クライアントを置き、`tts.TTSClient` を実装する。
