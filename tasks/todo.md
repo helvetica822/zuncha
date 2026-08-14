@@ -794,4 +794,20 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 
 - [x] ずんだもんによるW-09実装（緑・race・ミューテーション実測まで完了、**自己完了扱いにはせずin_progress**）
 - [x] つむぎによる独立検証: build/vet/gofmt OK、`go test ./tests/...` 83トップレベルPASS/0 FAIL、`test_race.sh`クリーン(DB: `zuncha_test_tsumugi`)。`internal/llm`/`internal/anthropic`無変更・httptestのみ使用を確認。WIPコミットで固定してそらへレビュー依頼
-- [ ] そらへW-09レビュー依頼
+- [x] そらへW-09レビュー依頼 → ⚠要修正(指摘3件)
+
+### そらW-09レビュー(e4d3b5b): ⚠要修正(指摘3件) (2026-08-10)
+
+実測: 455 PASS/0 FAIL/0 SKIP(DB: `zuncha_test_sora`)、raceクリーン、`internal/llm`/`internal/anthropic`無変更、実VOICEVOX呼び出しなしを確認。FK制約撤去(D-4訂正2)は`pg_constraint`を直接照会し`conversation_id`のFKのみであることまで実測。speaker ID/VOICEVOX_BASE_URLの判断は妥当と評価。ミューテーション7件すべて赤、既存テストの退行なし。「孤児ファイル」の設計判断も妥当と評価。
+
+**共有DB`zuncha_test`(旧スキーマのまま残存)の注意喚起**: そらの実測中、共有DBが`audio_files_message_id_fkey`付きの旧スキーマのまま放置されていることが判明(そら自身の環境ミスが発端で発覚)。`test_env.sh`を忘れた人が同じ罠を踏む可能性があるため、W-11前に削除または再作成が必要(申し送り)。
+
+**指摘①【つむぎ担当・対応済み】`02_database_design.md`§4のER図が旧FK記述のまま**: §2.3・§3は更新済みだったが、ER図(L200/L206)だけ「1:1 (ON DELETE CASCADE)」「FK message_id TEXT ──→ messages.id」という撤去前の記述が残存。つむぎが直接修正済み。
+
+**指摘②【ずんだもんへ差し戻し】`VOICEVOX_BASE_URL`のデフォルト補完が未検証**: lessons.md 2026-08-10の判定基準1(値が壊れてもエラーにならずフォールバックが黙って吸収するか)に該当。ポート打ち間違え等があっても起動は成功し、TTS失敗は非致命なので「文字は出るが一生無音」のまま気づけない。`TestLoadConfig`追加(未設定時にデフォルトURLが入ること、設定時はその値が優先されることの2ケース)を依頼。
+
+**指摘③【ずんだもんへ差し戻し】TTS失敗がログに一切残らない**: `response_streamer.go`の`ttsErr`が握りつぶされ記録されない。W-08以前はttsClientがnilで即クラッシュしたため気づけたが、W-09でデフォルトURL+非致命化が揃った結果、VOICEVOXの停止やURL設定ミスが完全に無症状になる。`log.Printf`でのログ追加(発話内容は載せない)を依頼。
+
+- [x] 指摘①対応(つむぎ直接修正)
+- [ ] 指摘②③をずんだもんへ差し戻し
+- [x] 共有DB`zuncha_test`の旧スキーマ問題への対応: つむぎが`DROP DATABASE zuncha_test`で削除。次回`ZUNCHA_TEST_DB_OWNER`未設定で使われた際は`create_test_db.sh`経由で新スキーマで再作成される

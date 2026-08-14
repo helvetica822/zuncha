@@ -197,13 +197,13 @@ FK  conversation_id TEXT ──→ conversations.id              │
     emotion         TEXT                                   │
     created_at      TIMESTAMPTZ                            │
         │                                                  │
-        │ 1:1 (ON DELETE CASCADE)                          │
+        │ 1:1 (FK制約なし・連鎖削除されない。§2.3参照)      │
         ▼                                                  │
 audio_files                                                │
 ─────────────────────────────────                          │
 PK  id              TEXT                                   │
 FK  conversation_id TEXT ──→ conversations.id ─────────────┘
-FK  message_id      TEXT ──→ messages.id
+    message_id      TEXT      (FK制約なし・§2.3参照)
     file_path       TEXT
     created_at      TIMESTAMPTZ
     fetched_at      TIMESTAMPTZ
