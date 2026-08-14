@@ -857,5 +857,5 @@ M7 により、既存 `response_streamer_test.go` の検知力が引数追加に
 
 **M8対応(つむぎ直接修正)**: `tests/unit/response_streamer_test.go`の既存テストに`assert.Contains(t, logged, streamerMessageID, ...)`を1行追加し、message_idの検証漏れを解消。全体テスト・build/vet/gofmt再確認済み。
 
-- [x] W-09(VOICEVOX TTS実装) 完了(つむぎ最終ゲート: そら承認済み、M8の1行対応込み)
+- [x] W-09(VOICEVOX TTS実装) 完了(つむぎ最終ゲート: そら承認済み、M8の1行対応込み)。そらがM8ミューテーションを再実行し対応後は正しく赤化することまで実測確認済み(全体退行なし、`8eabd3f`のまま無改変)
 - [ ] 次タスク判断: W-10/W-11(Docker Compose・実疎通確認)着手 or 他の優先度確認
