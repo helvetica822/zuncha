@@ -14,26 +14,29 @@ import (
 
 // Handler はハンドラが依存するサービスを保持する。
 type Handler struct {
-	createConv *service.CreateConversationService
-	fetchAudio *service.FetchAudioService
-	chat       *service.ChatService
-	convRepo   repository.ConversationRepository
-	hub        *sse.Hub
+	createConv   *service.CreateConversationService
+	fetchAudio   *service.FetchAudioService
+	chat         *service.ChatService
+	speechToText *service.SpeechToTextService
+	convRepo     repository.ConversationRepository
+	hub          *sse.Hub
 }
 
 func NewHandler(
 	createConv *service.CreateConversationService,
 	fetchAudio *service.FetchAudioService,
 	chat *service.ChatService,
+	speechToText *service.SpeechToTextService,
 	convRepo repository.ConversationRepository,
 	hub *sse.Hub,
 ) *Handler {
 	return &Handler{
-		createConv: createConv,
-		fetchAudio: fetchAudio,
-		chat:       chat,
-		convRepo:   convRepo,
-		hub:        hub,
+		createConv:   createConv,
+		fetchAudio:   fetchAudio,
+		chat:         chat,
+		speechToText: speechToText,
+		convRepo:     convRepo,
+		hub:          hub,
 	}
 }
 
@@ -44,5 +47,6 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /audio/{id}", h.GetAudio)
 	mux.HandleFunc("GET /conversations/{id}/events", h.Events)
 	mux.HandleFunc("POST /conversations/{id}/messages", h.PostMessage)
+	mux.HandleFunc("POST /conversations/{id}/stt", h.HandleSTT)
 	return mux
 }

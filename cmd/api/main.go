@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"zuncha/internal/anthropic"
+	"zuncha/internal/audioconv"
 	"zuncha/internal/handler"
 	"zuncha/internal/httpserver"
 	"zuncha/internal/llm"
@@ -26,6 +27,7 @@ import (
 	"zuncha/internal/service"
 	"zuncha/internal/sse"
 	"zuncha/internal/voicevox"
+	"zuncha/internal/whispercpp"
 )
 
 const (
@@ -35,6 +37,7 @@ const (
 	envAllowedOrigins  = "ZUNCHA_ALLOWED_ORIGINS"
 	envAnthropicAPIKey = "ANTHROPIC_API_KEY"
 	envVoicevoxBaseURL = "VOICEVOX_BASE_URL"
+	envWhisperBaseURL  = "WHISPER_SERVER_BASE_URL"
 	// defaultVoicevoxBaseURL は VOICEVOX ENGINE の標準ポート。ANTHROPIC_API_KEY と違い
 	// 秘密情報でも環境ごとに変わる値でもなく、開発時は既定値でそのまま動くため、
 	// 未設定を起動時エラーにせずデフォルトを与える（W-11 の Compose ではサービス名で上書きする）。
@@ -51,6 +54,7 @@ type config struct {
 	allowedOrigins  []string
 	anthropicAPIKey string
 	voicevoxBaseURL string
+	whisperBaseURL  string
 }
 
 func loadConfig() config {
@@ -60,6 +64,7 @@ func loadConfig() config {
 		allowedOrigins:  parseAllowedOrigins(os.Getenv(envAllowedOrigins)),
 		anthropicAPIKey: os.Getenv(envAnthropicAPIKey),
 		voicevoxBaseURL: os.Getenv(envVoicevoxBaseURL),
+		whisperBaseURL:  os.Getenv(envWhisperBaseURL),
 	}
 	if c.port == "" {
 		c.port = defaultPort
@@ -91,6 +96,12 @@ func main() {
 	// 実行時に初めて落ちるより起動時に落とす（DB URL と同じ流儀）。
 	if cfg.anthropicAPIKey == "" {
 		log.Fatal("ANTHROPIC_API_KEY が未設定です")
+	}
+	// VOICEVOX と違いデフォルトを持たせない。whisper-server の既定ポートは 8080 で
+	// 本API の defaultPort と衝突するため、既定値を補うと「自分自身へ POST して 404」
+	// という原因の見えない失敗になる。未設定は起動時に落として気づかせる。
+	if cfg.whisperBaseURL == "" {
+		log.Fatal("WHISPER_SERVER_BASE_URL が未設定です（例: http://whisper-server:8080）")
 	}
 
 	db, err := sql.Open("postgres", cfg.databaseURL)
@@ -132,10 +143,16 @@ func main() {
 		time.Now,
 	)
 
+	whisperClient, err := whispercpp.NewClient(cfg.whisperBaseURL)
+	if err != nil {
+		log.Fatalf("whisper-serverクライアントの生成に失敗: %v", err)
+	}
+	speechToText := service.NewSpeechToTextService(audioconv.NewConverter(), whisperClient)
+
 	h := handler.NewHandler(
 		service.NewCreateConversationService(convRepo),
 		service.NewFetchAudioService(audioRepo, files),
-		chat, convRepo, hub,
+		chat, speechToText, convRepo, hub,
 	)
 
 	handler := middleware.CORS(cfg.allowedOrigins)(h.Routes())

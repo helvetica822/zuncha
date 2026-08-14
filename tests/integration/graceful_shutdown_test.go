@@ -191,7 +191,7 @@ func TestGracefulShutdown_CtxDependentHandlerIsCanceled(t *testing.T) {
 // in-flight ハンドラの r.Context() をキャンセルしないため、BaseContext による能動的な
 // キャンセルが無いと Shutdown は必ず shutdownTimeout 満了までブロックして失敗する。
 func TestGracefulShutdown_SSE接続中でも停止がエラーなく完了する(t *testing.T) {
-	h, db, hub, _ := newTestHandler(t)
+	h, db, hub, _, _, _ := newTestHandler(t)
 	convID := ulid.Make().String()
 	insertConversation(t, db, convID, time.Now())
 

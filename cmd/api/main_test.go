@@ -59,6 +59,34 @@ func TestLoadConfig(t *testing.T) {
 		assert.Equal(t, "http://localhost:50021", cfg.voicevoxBaseURL)
 	})
 
+	// WHISPER_SERVER_BASE_URL は VOICEVOX_BASE_URL と違い「デフォルトを与えない」。
+	// whisper-server の既定ポートは 8080 で、本APIの既定ポート(defaultPort)と衝突するため、
+	// http://localhost:8080 を補うと自分自身へ POST して 404 になる（原因が見えない事故）。
+	// 「既定値でそのまま動く」という VOICEVOX と同じ判定基準を当てはめた結果、
+	// whisper だけは基準を満たさないので未設定は起動時エラーにする。
+	t.Run("WHISPER_SERVER_BASE_URLは未設定なら空のまま（デフォルトを補わない）", func(t *testing.T) {
+		t.Setenv(envWhisperBaseURL, "placeholder")
+		require.NoError(t, os.Unsetenv(envWhisperBaseURL))
+
+		cfg := loadConfig()
+
+		assert.Equal(t, "", cfg.whisperBaseURL)
+	})
+
+	t.Run("WHISPER_SERVER_BASE_URLの既定ポートは本APIの既定ポートと衝突する", func(t *testing.T) {
+		// 「デフォルトを与えない」判断の根拠そのものを固定する。
+		// ここが崩れた（＝本APIの既定ポートが変わった）ら、判断を見直す合図になる。
+		assert.Equal(t, "8080", defaultPort)
+	})
+
+	t.Run("WHISPER_SERVER_BASE_URL設定時はその値が使われる", func(t *testing.T) {
+		t.Setenv(envWhisperBaseURL, "http://whisper-server:8080")
+
+		cfg := loadConfig()
+
+		assert.Equal(t, "http://whisper-server:8080", cfg.whisperBaseURL)
+	})
+
 	t.Run("VOICEVOX_BASE_URL設定時はその値が優先される", func(t *testing.T) {
 		// W-11 の Compose ではサービス名で上書きする想定（main.go のコメント）。
 		t.Setenv(envVoicevoxBaseURL, "http://voicevox:50021")

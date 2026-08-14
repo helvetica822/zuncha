@@ -871,3 +871,25 @@ W-10着手前に、whisper-serverの`/inference`エンドポイントのレス�
 - [x] whisper-server API仕様調査・confidence算出方針決定・指示書作成
 - [ ] ずんだもんによるW-10実装
 - [ ] そらへW-10レビュー依頼
+
+### W-10実装(ずんだもん / 2026-08-14) — 実装完了・レビュー待ち
+
+**新規**: `internal/whispercpp/client.go`(whisper-server HTTPクライアント)、`internal/audioconv/converter.go`(ffmpeg変換)、`internal/service/speech_to_text.go`(オーケストレーション)、`internal/handler/stt.go`(`POST /conversations/{id}/stt`)。
+**変更**: `internal/handler/handler.go`(DI追加+ルート登録)、`cmd/api/main.go`(`WHISPER_SERVER_BASE_URL`+配線)、`cmd/api/main_test.go`、`tests/integration/handler_helpers_test.go`(フェイク2種追加)、`tests/integration/graceful_shutdown_test.go`(戻り値追随)。
+**無変更確認済み**: `internal/llm` / `internal/anthropic` / `internal/tts` / `internal/voicevox` / `internal/stt`。
+
+**RED実測**: スタブ実装(ゼロ値返し)を先に置いた状態でテストを走らせ、**62ケースがコンパイルエラーではなくアサーション失敗で赤**になることを確認してから実装した。既存テストは終始緑。
+
+**確定事項からの逸脱1件(要確認)**: ffmpegの出力を「WAV直出し(`-f wav pipe:1`)」ではなく**生PCM(`-f s16le`)+ Go側でWAVヘッダ付与**にした。根拠は指示書§3.1の「推測で書かない」に従って一次情報を確認した結果:
+- FFmpeg `libavformat/riffenc.c` の `ff_start_tag` はサイズに `-1`(0xFFFFFFFF)を書き、`wavenc.c` の `wav_write_trailer` は `AVIO_SEEKABLE_NORMAL` のときしか `ff_end_tag` で埋め戻さない → **パイプ出力ではRIFF/dataサイズが 0xFFFFFFFF のまま残る**。
+- whisper.cpp 側 (`examples/common-whisper.cpp` の `read_audio_from_decoder`) は `ma_decoder_get_length_in_pcm_frames` の戻り値で `pcmf32.resize()` するため、その WAV を渡すと数GBの確保を試みる。
+- 引数自体は whisper.cpp 本体の `convert_to_wav`(`ffmpeg -i <in> -y -ar 16000 -ac 1 -c:a pcm_s16le <out>`) に合わせた。D-3 の「16kHz mono WAV へ変換」という結論は変えていない(ヘッダを誰が書くかだけが違う)。
+
+**ffmpeg未インストール環境のSkip**: 実ffmpeg依存テストは**2件がskip**(`TestConverter_実ffmpegでWAVへ変換できる` / `TestConverter_実ffmpegで壊れた入力はエラー`)。skip時は「緑ではなく未実行である」旨を`t.Log`で明示。ただし**偽ffmpegバイナリ(シェルスクリプト)経由の結合検証9件は常時実行**しており、引数列・stdin転送・stdout→WAV包装・stderr伝播・終了コード・空入力ガードは実測済み。実ffmpegとの引数互換だけがW-11(ffmpeg同梱イメージ)まで未実証。
+
+**ミューテーション実測(9件すべて検知)**: M1 no_speech_prob最大→最小 / M2 最大→平均 / M3 `verbose_json`→`json` / M4 dataサイズ→0xFFFFFFFF / M5 ffmpeg変換スキップ(unit+integration両方) / M6 `IsRecognitionFailed`判定削除 / M7 サンプリングレート8kHz / M8 multipartフィールド名`audio`→`file` / M10 `cmd.Stdin`未接続。`go test -overlay`で実施し、一時ファイルは削除済み・`git status`に残骸なしを確認。
+
+**全体実測**: `go test ./... -count=1` 全緑(524 PASS / 0 FAIL / 2 SKIP、DB: `zuncha_test_zundamon`)、`./scripts/test_race.sh` クリーン、`gofmt -l .` 空、`go vet ./...` EXIT 0、`go build ./...` 成功。
+
+- [x] ずんだもんによるW-10実装(緑。完了判定はPM最終ゲート待ちのため未クローズ)
+- [ ] そらへW-10レビュー依頼(逸脱1件の可否判断を含む)

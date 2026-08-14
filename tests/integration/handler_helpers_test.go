@@ -22,6 +22,7 @@ import (
 	"zuncha/internal/postgres"
 	"zuncha/internal/service"
 	"zuncha/internal/sse"
+	"zuncha/internal/stt"
 )
 
 // fakeLLMClient は呼び出し回数とプロンプトを記録する LLMClient。
@@ -97,30 +98,102 @@ func (fakeTTSClient) Synthesize(ctx context.Context, text, conversationID, messa
 	return "", context.Canceled
 }
 
+// fakeAudioConverter は ffmpeg を呼ばずに変換結果（またはエラー）を返す。
+// ffmpeg はこの開発環境に存在しないため、結合テストへ実バイナリ依存を持ち込まない。
+type fakeAudioConverter struct {
+	mu     sync.Mutex
+	calls  int
+	inputs [][]byte
+
+	out []byte
+	err error
+}
+
+func (f *fakeAudioConverter) Convert(_ context.Context, input []byte) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.inputs = append(f.inputs, append([]byte(nil), input...))
+	return f.out, f.err
+}
+
+func (f *fakeAudioConverter) setError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeAudioConverter) recordedInputs() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.inputs...)
+}
+
+// fakeSTTClient は whisper-server を呼ばずに認識結果（またはエラー）を返す。
+type fakeSTTClient struct {
+	mu     sync.Mutex
+	calls  int
+	result stt.STTResult
+	err    error
+}
+
+func (f *fakeSTTClient) Transcribe(_ context.Context, _ []byte) (stt.STTResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.result, f.err
+}
+
+func (f *fakeSTTClient) setResult(result stt.STTResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.result = result
+	f.err = nil
+}
+
+func (f *fakeSTTClient) setError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeSTTClient) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 // handlerFixture はハンドラ結合テストの一式を保持する。
 type handlerFixture struct {
-	server *httptest.Server
-	db     *sql.DB
-	hub    *sse.Hub
-	llmC   *fakeLLMClient
-	client *http.Client
+	server  *httptest.Server
+	db      *sql.DB
+	hub     *sse.Hub
+	llmC    *fakeLLMClient
+	sttConv *fakeAudioConverter
+	sttC    *fakeSTTClient
+	client  *http.Client
 }
 
 // newHandlerFixture は実DB・実Hub・フェイクLLMで組んだ HTTP サーバを起動する。
 func newHandlerFixture(t *testing.T) *handlerFixture {
 	t.Helper()
-	h, db, hub, llmC := newTestHandler(t)
+	h, db, hub, llmC, sttConv, sttC := newTestHandler(t)
 
 	server := httptest.NewServer(h.Routes())
 	t.Cleanup(server.Close)
 
-	return &handlerFixture{server: server, db: db, hub: hub, llmC: llmC, client: server.Client()}
+	return &handlerFixture{
+		server: server, db: db, hub: hub, llmC: llmC,
+		sttConv: sttConv, sttC: sttC, client: server.Client(),
+	}
 }
 
 // newTestHandler は実DB・実Hub・フェイクLLMでハンドラ一式を組む（サーバの起動方法は呼び出し側に委ねる）。
 // グレースフル停止のテストは httptest ではなく実リスナ上で httpserver.Run を回す必要があるため、
 // ハンドラの組み立てだけを切り出している。
-func newTestHandler(t *testing.T) (*handler.Handler, *sql.DB, *sse.Hub, *fakeLLMClient) {
+func newTestHandler(t *testing.T) (
+	*handler.Handler, *sql.DB, *sse.Hub, *fakeLLMClient, *fakeAudioConverter, *fakeSTTClient,
+) {
 	t.Helper()
 	db := setupTestDB(t)
 
@@ -138,13 +211,18 @@ func newTestHandler(t *testing.T) (*handler.Handler, *sql.DB, *sse.Hub, *fakeLLM
 		func() string { return ulid.Make().String() },
 		time.Now,
 	)
+	sttConv := &fakeAudioConverter{out: []byte("RIFF-converted-wav")}
+	sttC := &fakeSTTClient{result: stt.STTResult{Text: "こんにちはなのだ", Confidence: 0.9}}
+
 	h := handler.NewHandler(
 		service.NewCreateConversationService(convRepo),
 		service.NewFetchAudioService(audioRepo, localfs.NewFileStore()),
-		chat, convRepo, hub,
+		chat,
+		service.NewSpeechToTextService(sttConv, sttC),
+		convRepo, hub,
 	)
 
-	return h, db, hub, llmC
+	return h, db, hub, llmC, sttConv, sttC
 }
 
 // seedConversation は会話を1件作って IDを返す。
